@@ -1,9 +1,12 @@
-// Chat IA via l'API Google Gemini (gratuite). Nécessite GEMINI_API_KEY dans
-// les variables d'environnement (jamais dans le code ni dans un message
-// Discord). Clé à récupérer gratuitement sur https://aistudio.google.com/apikey
+// Chat IA via l'API Groq (gratuite, sans carte bancaire). Nécessite
+// GROQ_API_KEY dans les variables d'environnement (jamais dans le code ni
+// dans un message Discord). Clé à récupérer gratuitement sur https://console.groq.com/keys
+//
+// Pourquoi Groq et pas Gemini : quota journalier gratuit bien plus large et
+// surtout beaucoup plus stable dans le temps (pas de changement de nom de
+// modèle ni de règles tous les 15 jours).
 //
 // Deux "outils" en plus du simple chat :
-//  - Recherche Google intégrée à Gemini (jeux Roblox, infos générales, actus...)
 //  - Recherche YouTube (nécessite une 2e clé gratuite, optionnelle : YOUTUBE_API_KEY)
 //  - Lecture du profil d'un membre du serveur (rôles, date d'arrivée...)
 //
@@ -12,7 +15,7 @@
 // toujours, et ça évite de faire grossir la base pour rien. Elle est vidée
 // au redémarrage du bot.
 
-const MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
+const MODEL = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
 const MAX_HISTORY_MESSAGES = 12; // 6 échanges question/réponse
 const MAX_REPLY_CHARS = 1900;    // marge sous la limite Discord de 2000
 const MAX_TOOL_ROUNDS = 4;       // sécurité anti-boucle infinie d'appels d'outils
@@ -38,29 +41,36 @@ const BASE_SYSTEM_PROMPT = [
   "Si un membre cherche un salon, un rôle, ou demande où trouver quelque chose sur le serveur, utilise la liste de salons/rôles fournie plus bas pour l'orienter précisément.",
   "Tu as un outil pour chercher des vidéos YouTube (search_youtube) : utilise-le si on te demande une vidéo ou une musique précise, et donne le lien direct trouvé.",
   "Tu as un outil pour lire le profil d'un membre du serveur (get_member_info) : utilise-le si on te demande des infos sur quelqu'un (rôles, date d'arrivée, etc.), y compris sur la personne qui te parle si elle demande 'et moi ?'.",
+  "Tu n'as PAS accès à la recherche web en direct : pour des infos très récentes (actus de dernière minute), dis-le honnêtement au lieu d'inventer.",
 ].join('\n');
 
 // ------------------------------------------------------------------
-// OUTILS (functions) QUE GEMINI PEUT APPELER
+// OUTILS (functions) QUE LE MODÈLE PEUT APPELER (format OpenAI, compatible Groq)
 // ------------------------------------------------------------------
 
-const FUNCTION_DECLARATIONS = [
+const TOOLS = [
   {
-    name: 'search_youtube',
-    description: "Cherche une vidéo ou une musique sur YouTube et renvoie le titre et le lien direct des meilleurs résultats.",
-    parameters: {
-      type: 'object',
-      properties: { query: { type: 'string', description: 'Termes de recherche (titre de vidéo, nom de musique/artiste...)' } },
-      required: ['query'],
+    type: 'function',
+    function: {
+      name: 'search_youtube',
+      description: "Cherche une vidéo ou une musique sur YouTube et renvoie le titre et le lien direct des meilleurs résultats.",
+      parameters: {
+        type: 'object',
+        properties: { query: { type: 'string', description: 'Termes de recherche (titre de vidéo, nom de musique/artiste...)' } },
+        required: ['query'],
+      },
     },
   },
   {
-    name: 'get_member_info',
-    description: "Renvoie les infos d'un membre du serveur Discord (pseudo, rôles, date d'arrivée sur le serveur, date de création du compte). Cherche par pseudo, surnom, ou mention.",
-    parameters: {
-      type: 'object',
-      properties: { query: { type: 'string', description: "Nom, pseudo ou mention (ex: '@Jean' ou 'Jean') de la personne recherchée." } },
-      required: ['query'],
+    type: 'function',
+    function: {
+      name: 'get_member_info',
+      description: "Renvoie les infos d'un membre du serveur Discord (pseudo, rôles, date d'arrivée sur le serveur, date de création du compte). Cherche par pseudo, surnom, ou mention.",
+      parameters: {
+        type: 'object',
+        properties: { query: { type: 'string', description: "Nom, pseudo ou mention (ex: '@Jean' ou 'Jean') de la personne recherchée." } },
+        required: ['query'],
+      },
     },
   },
 ];
@@ -117,18 +127,13 @@ async function runFunctionCall(name, args, guild) {
 // ------------------------------------------------------------------
 
 // Le nom "askClaude" est gardé tel quel pour ne pas avoir à toucher index.js
-// ailleurs (seul ce fichier change), même si ça parle maintenant à Gemini.
+// ailleurs (seul ce fichier change), même si ça parle maintenant à Groq.
 async function askClaude({ channelId, userId, userName, userText, persona, serverContext, speakerInfo, guild }) {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return { error: "La clé GEMINI_API_KEY n'est pas configurée sur le bot." };
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) return { error: "La clé GROQ_API_KEY n'est pas configurée sur le bot." };
 
   const key = historyKey(channelId, userId);
   pushHistory(key, 'user', userText);
-  // Gemini utilise les rôles "user" et "model" (pas "assistant").
-  const contents = (histories.get(key) || []).map((m) => ({
-    role: m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: m.content }],
-  }));
 
   const system = [
     persona ? `${BASE_SYSTEM_PROMPT}\n\nPersonnalité demandée par le staff : ${persona}` : BASE_SYSTEM_PROMPT,
@@ -138,32 +143,26 @@ async function askClaude({ channelId, userId, userName, userText, persona, serve
       : '',
   ].filter(Boolean).join('\n');
 
-  const tools = [
-    { functionDeclarations: FUNCTION_DECLARATIONS },
+  // Groq/OpenAI utilisent directement les rôles "user" et "assistant".
+  const baseMessages = [
+    { role: 'system', content: system },
+    ...(histories.get(key) || []).map((m) => ({ role: m.role, content: m.content })),
   ];
 
-  async function callGemini(currentContents) {
+  async function callGroq(messages) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 40000);
     try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            contents: currentContents,
-            systemInstruction: { parts: [{ text: system }] },
-            tools,
-            generationConfig: { maxOutputTokens: 700 },
-          }),
-          signal: controller.signal,
-        }
-      );
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ model: MODEL, messages, tools: TOOLS, max_tokens: 700 }),
+        signal: controller.signal,
+      });
       const data = await res.json();
       if (!res.ok) {
         const err = new Error(data?.error?.message || `Erreur API (${res.status})`);
-        err.apiStatus = data?.error?.status || res.status;
+        err.apiStatus = data?.error?.code || data?.error?.type || res.status;
         throw err;
       }
       return data;
@@ -173,35 +172,33 @@ async function askClaude({ channelId, userId, userName, userText, persona, serve
   }
 
   try {
-    let workingContents = contents;
-    let data = await callGemini(workingContents);
+    let messages = baseMessages;
+    let data = await callGroq(messages);
 
-    // Boucle d'appels d'outils : tant que Gemini demande une fonction, on
+    // Boucle d'appels d'outils : tant que le modèle demande une fonction, on
     // l'exécute et on lui renvoie le résultat, jusqu'à une vraie réponse texte.
     for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
-      const parts = data.candidates?.[0]?.content?.parts || [];
-      const calls = parts.filter((p) => p.functionCall);
+      const msg = data.choices?.[0]?.message;
+      const calls = msg?.tool_calls || [];
       if (!calls.length) break;
 
-      // On rejoue le tour du modèle (avec ses appels de fonction) + nos réponses.
-      workingContents = [...workingContents, { role: 'model', parts }];
-      const responseParts = [];
+      messages = [...messages, msg];
       for (const c of calls) {
-        const result = await runFunctionCall(c.functionCall.name, c.functionCall.args || {}, guild);
-        responseParts.push({ functionResponse: { name: c.functionCall.name, response: result } });
+        let args = {};
+        try { args = JSON.parse(c.function.arguments || '{}'); } catch { /* args invalides, on garde {} */ }
+        const result = await runFunctionCall(c.function.name, args, guild);
+        messages.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify(result) });
       }
-      workingContents = [...workingContents, { role: 'function', parts: responseParts }];
-      data = await callGemini(workingContents);
+      data = await callGroq(messages);
     }
 
-    const finalParts = data.candidates?.[0]?.content?.parts || [];
-    const text = finalParts.map((p) => p.text || '').join('\n').trim() || '(réponse vide)';
+    const text = (data.choices?.[0]?.message?.content || '').trim() || '(réponse vide)';
     pushHistory(key, 'assistant', text);
     return { text: text.length > MAX_REPLY_CHARS ? `${text.slice(0, MAX_REPLY_CHARS)}…` : text };
   } catch (e) {
-    const msg = e.name === 'AbortError' ? 'Gemini a mis trop de temps à répondre (40s), abandon.' : (e.apiStatus ? `${e.apiStatus} : ${e.message}` : e.message);
-    console.error('Appel API Gemini impossible :', msg);
-    return { error: `Impossible de contacter Gemini (${msg}).` };
+    const msg = e.name === 'AbortError' ? 'Groq a mis trop de temps à répondre (40s), abandon.' : (e.apiStatus ? `${e.apiStatus} : ${e.message}` : e.message);
+    console.error('Appel API Groq impossible :', msg);
+    return { error: `Impossible de contacter Groq (${msg}).` };
   }
 }
 
