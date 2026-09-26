@@ -48,10 +48,10 @@ async function askClaude({ channelId, userId, userName, userText, persona }) {
   const system = persona ? `${BASE_SYSTEM_PROMPT}\n\nPersonnalité demandée par le staff : ${persona}` : BASE_SYSTEM_PROMPT;
 
   try {
-    // Limite de temps : si Gemini ne répond pas en 12s, on abandonne proprement
+    // Limite de temps : si Gemini ne répond pas en 25s, on abandonne proprement
     // au lieu de rester bloqué et de faire planter la commande Discord.
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 12000);
+    const timeout = setTimeout(() => controller.abort(), 25000);
     let res;
     try {
       res = await fetch(
@@ -79,7 +79,7 @@ async function askClaude({ channelId, userId, userName, userText, persona }) {
     pushHistory(key, 'assistant', text);
     return { text: text.length > MAX_REPLY_CHARS ? `${text.slice(0, MAX_REPLY_CHARS)}…` : text };
   } catch (e) {
-    const msg = e.name === 'AbortError' ? 'Gemini a mis trop de temps à répondre (12s), abandon.' : e.message;
+    const msg = e.name === 'AbortError' ? 'Gemini a mis trop de temps à répondre (25s), abandon.' : e.message;
     console.error('Appel API Gemini impossible :', msg);
     return { error: `Impossible de contacter Gemini (${msg}).` };
   }
