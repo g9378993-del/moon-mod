@@ -17,7 +17,7 @@ process.on('uncaughtException', (err) => console.error('Exception non gérée :'
 // ----------------------------------------------------------------
 // Reconstruit à chaque appel (pas de cache) : les salons/rôles peuvent
 // changer entre deux messages, et c'est rapide (cache local de discord.js).
-function buildServerContext(guild, member) {
+function buildServerContext(guild, member, otherMembers = []) {
   // Liste COMPLÈTE (pas de troncature) : salons visibles par la personne qui
   // parle au bot, avec leur ID. Si `member` est fourni, on filtre selon ses
   // permissions réelles (ViewChannel) pour que l'IA ne propose jamais un
@@ -34,17 +34,26 @@ function buildServerContext(guild, member) {
     .sort((a, b) => b.position - a.position)
     .map((r) => `@${r.name} — id:${r.id} (<@&${r.id}>)`);
 
+  const rolesOf = (m) => guild.roles.cache
+    .filter((r) => r.id !== guild.id && m.roles.cache.has(r.id))
+    .sort((a, b) => b.position - a.position)
+    .map((r) => `@${r.name} (id:${r.id})`);
+
   // Rôle(s) de la personne qui parle actuellement au bot, du plus haut au plus bas.
-  const memberRoles = member
-    ? guild.roles.cache
-        .filter((r) => r.id !== guild.id && member.roles.cache.has(r.id))
-        .sort((a, b) => b.position - a.position)
-        .map((r) => `@${r.name} (id:${r.id})`)
-    : [];
+  const memberRoles = member ? rolesOf(member) : [];
+
+  // Rôle(s) de toute personne @mentionnée dans le message (pour répondre à
+  // "quel rôle a untel ?" même si ce n'est pas la personne qui parle).
+  const mentionedLines = otherMembers
+    .filter((m) => !member || m.id !== member.id)
+    .map((m) => `${m.user.tag} : ${rolesOf(m).join(', ') || 'aucun rôle particulier'}`);
 
   return [
     member
       ? `Rôle(s) de LA PERSONNE QUI TE PARLE actuellement : ${memberRoles.join(', ') || 'aucun rôle particulier (membre de base)'}. Son rôle le plus élevé : ${memberRoles[0] || 'aucun'}.`
+      : '',
+    mentionedLines.length
+      ? `Rôle(s) des personnes @mentionnées dans ce message :\n${mentionedLines.join('\n')}`
       : '',
     `Salons textuels que CETTE personne peut voir (liste complète) :\n${channels.join('\n') || 'aucun'}`,
     `Tous les rôles du serveur (liste complète) :\n${roles.join('\n') || 'aucun'}`,
@@ -557,7 +566,9 @@ async function routeInteraction(interaction) {
   if (interaction.commandName === 'ask') {
     await interaction.deferReply();
     const question = interaction.options.getString('question');
-    const res = await ai.askClaude({ channelId: interaction.channelId, userId: interaction.user.id, userName: interaction.user.username, userText: question, persona: g.aiPersona, serverContext: buildServerContext(guild, interaction.member) });
+    const mentionedIds = [...new Set([...question.matchAll(/<@!?(\d+)>/g)].map((m) => m[1]))];
+    const otherMembers = (await Promise.all(mentionedIds.map((id) => guild.members.cache.get(id) || guild.members.fetch(id).catch(() => null)))).filter(Boolean);
+    const res = await ai.askClaude({ channelId: interaction.channelId, userId: interaction.user.id, userName: interaction.user.username, userText: question, persona: g.aiPersona, serverContext: buildServerContext(guild, interaction.member, otherMembers) });
     await interaction.editReply(res.error ? `❌ ${res.error}` : res.text);
     return;
   }
@@ -603,7 +614,8 @@ client.on(Events.MessageCreate, async (message) => {
     const text = message.content.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim();
     if (!text) return;
     await message.channel.sendTyping().catch(() => {});
-    const res = await ai.askClaude({ channelId: message.channelId, userId: message.author.id, userName: message.author.username, userText: text, persona: g.aiPersona, serverContext: buildServerContext(message.guild, message.member) });
+    const otherMembers = [...message.mentions.members.values()].filter((m) => m.id !== client.user.id);
+    const res = await ai.askClaude({ channelId: message.channelId, userId: message.author.id, userName: message.author.username, userText: text, persona: g.aiPersona, serverContext: buildServerContext(message.guild, message.member, otherMembers) });
     const out = res.error ? `❌ ${res.error}` : res.text;
     await message.reply({ content: out, allowedMentions: { repliedUser: false } });
   } catch (e) { console.error('Erreur MessageCreate :', e); }
