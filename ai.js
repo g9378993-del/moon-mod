@@ -7,7 +7,7 @@
 // toujours, et ça évite de faire grossir la base pour rien. Elle est vidée
 // au redémarrage du bot.
 
-const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
+const MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
 const MAX_HISTORY_MESSAGES = 12; // 6 échanges question/réponse
 const MAX_REPLY_CHARS = 1900;    // marge sous la limite Discord de 2000
 
@@ -48,18 +48,28 @@ async function askClaude({ channelId, userId, userName, userText, persona }) {
   const system = persona ? `${BASE_SYSTEM_PROMPT}\n\nPersonnalité demandée par le staff : ${persona}` : BASE_SYSTEM_PROMPT;
 
   try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          contents,
-          systemInstruction: { parts: [{ text: system }] },
-          generationConfig: { maxOutputTokens: 600 },
-        }),
-      }
-    );
+    // Limite de temps : si Gemini ne répond pas en 12s, on abandonne proprement
+    // au lieu de rester bloqué et de faire planter la commande Discord.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
+    let res;
+    try {
+      res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            contents,
+            systemInstruction: { parts: [{ text: system }] },
+            generationConfig: { maxOutputTokens: 600 },
+          }),
+          signal: controller.signal,
+        }
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
     const data = await res.json();
     if (!res.ok) {
       console.error('Erreur API Gemini :', data?.error?.message || res.status);
@@ -69,8 +79,9 @@ async function askClaude({ channelId, userId, userName, userText, persona }) {
     pushHistory(key, 'assistant', text);
     return { text: text.length > MAX_REPLY_CHARS ? `${text.slice(0, MAX_REPLY_CHARS)}…` : text };
   } catch (e) {
-    console.error('Appel API Gemini impossible :', e.message);
-    return { error: `Impossible de contacter Gemini (${e.message}).` };
+    const msg = e.name === 'AbortError' ? 'Gemini a mis trop de temps à répondre (12s), abandon.' : e.message;
+    console.error('Appel API Gemini impossible :', msg);
+    return { error: `Impossible de contacter Gemini (${msg}).` };
   }
 }
 
