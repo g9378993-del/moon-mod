@@ -32,8 +32,14 @@ function defaultGuild() {
     lockedChannels: {},       // channelId -> permissions @everyone d'avant verrouillage (pour /unlock)
     aiChannels: [],           // salons où l'IA répond à TOUS les messages, pas juste aux mentions
     aiEnabled: true,          // interrupteur général : répondre quand le bot est mentionné
+    aiLanguage: null,         // langue principale par défaut (/language), ex: "français", "english"...
     aiPersona: null,          // instruction supplémentaire optionnelle (ton, personnalité)
     cmdPerms: {},             // commande -> [roleId] autorisés en plus du staff (/permscmnds)
+  };
+}
+function defaultUser() {
+  return {
+    language: null, // code ISO 639-1 (ex: 'fr', 'en', 'es') détecté lors du dernier échange avec l'IA
   };
 }
 function normalizeGuild(data) {
@@ -51,7 +57,7 @@ function normalizeGuild(data) {
   };
 }
 
-const state = { guilds: {} };
+const state = { guilds: {}, users: {} };
 let collection = null;
 let mongoReady = false;
 const status = { uriSet: false, mongoConnected: false, connectError: null, lastSaveError: null };
@@ -60,6 +66,7 @@ function readLocalStore() {
   try {
     const raw = JSON.parse(fs.readFileSync(STORE_FILE, 'utf8'));
     for (const [id, g] of Object.entries(raw.guilds || {})) state.guilds[id] = normalizeGuild(g);
+    for (const [id, u] of Object.entries(raw.users || {})) state.users[id] = { ...defaultUser(), ...u };
   } catch (e) { /* premier démarrage : rien à lire */ }
 }
 function writeLocalStore() {
@@ -96,7 +103,11 @@ async function initDb() {
       try {
         collection = client.db('modbot').collection('store');
         const docs = await collection.find({}).toArray();
-        for (const doc of docs) if (String(doc._id).startsWith('guild:')) state.guilds[String(doc._id).slice(6)] = normalizeGuild(doc.data);
+        for (const doc of docs) {
+          const id = String(doc._id);
+          if (id.startsWith('guild:')) state.guilds[id.slice(6)] = normalizeGuild(doc.data);
+          else if (id.startsWith('user:')) state.users[id.slice(5)] = { ...defaultUser(), ...doc.data };
+        }
         mongoReady = true;
         status.mongoConnected = true;
         status.connectError = null;
@@ -118,6 +129,14 @@ function get(guildId) {
   if (!state.guilds[guildId]) state.guilds[guildId] = defaultGuild();
   return state.guilds[guildId];
 }
+// Stockage PAR UTILISATEUR, indépendant des serveurs : sert uniquement à
+// retenir la langue avec laquelle l'IA doit lui parler, pour lui répondre
+// pareil la prochaine fois même sur un autre salon/serveur.
+function peekUser(userId) { return state.users[userId] || null; }
+function getUser(userId) {
+  if (!state.users[userId]) state.users[userId] = defaultUser();
+  return state.users[userId];
+}
 function getStatus() { return { ...status, persistent: mongoReady }; }
 
 async function mongoWrite(id, data) {
@@ -130,6 +149,10 @@ async function save(guildId) {
   writeLocalStore();
   if (mongoReady && collection && state.guilds[guildId]) await mongoWrite(`guild:${guildId}`, state.guilds[guildId]);
 }
+async function saveUser(userId) {
+  writeLocalStore();
+  if (mongoReady && collection && state.users[userId]) await mongoWrite(`user:${userId}`, state.users[userId]);
+}
 
 // Ajoute un cas de modération (kick/ban/warn/timeout/automod...) et renvoie
 // son numéro. Toujours appelé + suivi d'un db.save(guildId) par l'appelant.
@@ -140,4 +163,4 @@ function addCase(g, { type, userId, moderatorId, reason, extra }) {
   return record;
 }
 
-module.exports = { initDb, peek, get, save, getStatus, addCase, defaultGuild };
+module.exports = { initDb, peek, get, save, getStatus, addCase, defaultGuild, peekUser, getUser, saveUser };

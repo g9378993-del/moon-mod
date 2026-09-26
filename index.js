@@ -269,6 +269,11 @@ const commands = [
   new SlashCommandBuilder().setName('ask').setDescription("Poser une question à l'IA (répond dans ta langue)")
     .addStringOption((o) => o.setName('question').setDescription('Ta question').setRequired(true)),
 
+  new SlashCommandBuilder().setName('language').setDescription("Définir la langue principale utilisée par l'IA sur ce serveur")
+    .addSubcommand((s) => s.setName('set').setDescription('Changer la langue principale')
+      .addStringOption((o) => o.setName('langue').setDescription('Ex: français, english, español, العربية...').setRequired(true)))
+    .addSubcommand((s) => s.setName('show').setDescription('Voir la langue principale actuelle')),
+
   new SlashCommandBuilder().setName('permscmnds').setDescription('Autoriser/retirer un rôle sur une commande précise (en plus du staff)')
     .addSubcommand((s) => s.setName('allow').setDescription('Autoriser un rôle à utiliser une commande')
       .addStringOption((o) => o.setName('commande').setDescription('Nom de la commande, ex: kick').setRequired(true))
@@ -617,6 +622,17 @@ async function handleModCommand(interaction, guild, g) {
     if (sub === 'reset') { ai.resetHistory(interaction.channelId, interaction.user.id); await reply('🧹 Conversation oubliée.'); return; }
   }
 
+  if (cmd === 'language') {
+    const sub = interaction.options.getSubcommand();
+    if (sub === 'show') { await reply(g.aiLanguage ? `🌐 Langue principale actuelle : **${g.aiLanguage}**.` : "🌐 Aucune langue principale définie : le bot répond dans la langue de chaque personne."); return; }
+    if (sub === 'set') {
+      g.aiLanguage = interaction.options.getString('langue');
+      await db.save(guild.id);
+      await reply(`✅ Langue principale du bot sur ce serveur : **${g.aiLanguage}**. Il l'utilisera avec tout le monde, sauf avec ceux qui lui parlent (ou lui ont déjà parlé) dans une autre langue : dans ce cas il retient leur langue et continue à leur répondre pareil à chaque fois.`);
+      return;
+    }
+  }
+
   if (cmd === 'permscmnds') {
     const sub = interaction.options.getSubcommand();
     if (sub === 'list') {
@@ -658,7 +674,7 @@ async function handleModCommand(interaction, guild, g) {
       { name: 'Historique', value: '`/case` `/modlogs`' },
       { name: 'Configuration', value: '`/setmodlog` `/staffrole` `/permscmnds` `/warnactions` `/automod`' },
       { name: 'Salons', value: '`/findsalon` (chercher un salon par mot-clé)' },
-      { name: 'IA (Claude)', value: '`/ai` (config) · `/ask` (poser une question) · mentionne le bot ou écris dans un salon IA pour discuter, dans n\'importe quelle langue. Demande-lui "montre les logs" ou "logs du rôle X" (staff uniquement).' },
+      { name: 'IA (Claude)', value: '`/ai` (config) · `/ask` (poser une question) · `/language` (langue principale par défaut) · mentionne le bot ou écris dans un salon IA pour discuter, dans n\'importe quelle langue. Le bot retient la langue de chaque personne pour lui reparler pareil ensuite. Demande-lui "montre les logs" ou "logs du rôle X" (staff uniquement).' },
     );
     await interaction.editReply({ embeds: [embed] });
     return;
@@ -701,7 +717,9 @@ async function routeInteraction(interaction) {
     const mentionedMembers = (await Promise.all(mentionedIds.map((id) => guild.members.cache.get(id) || guild.members.fetch(id).catch(() => null)))).filter(Boolean);
     const namedMembers = await resolveMembersByName(guild, question, [interaction.user.id, ...mentionedMembers.map((m) => m.id)]);
     const otherMembers = [...mentionedMembers, ...namedMembers];
-    const res = await ai.askClaude({ channelId: interaction.channelId, userId: interaction.user.id, userName: interaction.user.username, userText: question, persona: g.aiPersona, serverContext: buildServerContext(guild, interaction.member, otherMembers) });
+    const savedUser = db.peekUser(interaction.user.id);
+    const res = await ai.askClaude({ channelId: interaction.channelId, userId: interaction.user.id, userName: interaction.user.username, userText: question, persona: g.aiPersona, serverContext: buildServerContext(guild, interaction.member, otherMembers), savedLang: savedUser?.language || null, defaultLang: g.aiLanguage || null });
+    if (res.langCode) { const u = db.getUser(interaction.user.id); if (u.language !== res.langCode) { u.language = res.langCode; await db.saveUser(interaction.user.id); } }
     await interaction.editReply(res.error ? `❌ ${res.error}` : res.text);
     return;
   }
@@ -713,7 +731,7 @@ async function routeInteraction(interaction) {
     return;
   }
 
-  await interaction.deferReply({ ephemeral: ['warnings', 'modlogs', 'case', 'staffrole', 'warnactions', 'automod', 'ai', 'help', 'setmodlog', 'permscmnds'].includes(interaction.commandName) });
+  await interaction.deferReply({ ephemeral: ['warnings', 'modlogs', 'case', 'staffrole', 'warnactions', 'automod', 'ai', 'help', 'setmodlog', 'permscmnds', 'language'].includes(interaction.commandName) });
   await handleModCommand(interaction, guild, g);
 }
 
@@ -755,7 +773,9 @@ client.on(Events.MessageCreate, async (message) => {
     const mentionedMembers = [...message.mentions.members.values()].filter((m) => m.id !== client.user.id);
     const namedMembers = await resolveMembersByName(message.guild, text, [message.author.id, client.user.id, ...mentionedMembers.map((m) => m.id)]);
     const otherMembers = [...mentionedMembers, ...namedMembers];
-    const res = await ai.askClaude({ channelId: message.channelId, userId: message.author.id, userName: message.author.username, userText: text, persona: g.aiPersona, serverContext: buildServerContext(message.guild, message.member, otherMembers) });
+    const savedUser = db.peekUser(message.author.id);
+    const res = await ai.askClaude({ channelId: message.channelId, userId: message.author.id, userName: message.author.username, userText: text, persona: g.aiPersona, serverContext: buildServerContext(message.guild, message.member, otherMembers), savedLang: savedUser?.language || null, defaultLang: g.aiLanguage || null });
+    if (res.langCode) { const u = db.getUser(message.author.id); if (u.language !== res.langCode) { u.language = res.langCode; await db.saveUser(message.author.id); } }
     const out = res.error ? `❌ ${res.error}` : res.text;
     await message.reply({ content: out, allowedMentions: { repliedUser: false } });
   } catch (e) { console.error('Erreur MessageCreate :', e); }

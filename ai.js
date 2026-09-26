@@ -24,9 +24,20 @@ function pushHistory(key, role, content) {
 
 function resetHistory(channelId, userId) { histories.delete(historyKey(channelId, userId)); }
 
+function languageInstruction({ savedLang, defaultLang }) {
+  if (savedLang) {
+    return `Tu sais déjà que CETTE personne préfère te parler en langue "${savedLang}" (déduit d'un échange précédent) : réponds-lui dans cette langue par défaut. Si son tout dernier message est clairement écrit dans une AUTRE langue, adapte-toi immédiatement à cette nouvelle langue à la place (elle devient sa nouvelle langue préférée).`;
+  }
+  if (defaultLang) {
+    return `Tu ne connais pas encore la langue préférée de cette personne. Réponds-lui par défaut en "${defaultLang}" (langue principale configurée pour ce serveur), SAUF si son dernier message est clairement écrit dans une autre langue (français, anglais, arabe, espagnol...), auquel cas réponds dans cette langue à la place.`;
+  }
+  return 'RÈGLE ABSOLUE : réponds TOUJOURS dans la langue utilisée par la personne dans son dernier message, quelle qu\'elle soit (français, anglais, arabe, espagnol...), même si les messages précédents étaient dans une autre langue.';
+}
+
+const LANGCODE_INSTRUCTION = "Avant toute chose, sur la toute première ligne de ta réponse brute, écris EXACTEMENT ce format : \"LANGCODE:xx\" où xx est le code ISO 639-1 (2 lettres, ex: fr, en, es, ar, de, pt, it) de la langue dans laquelle TU réponds à ce message (pas forcément celle du message si tu t'es adapté à une langue préférée connue). Ne mets rien d'autre sur cette ligne. Saute ensuite une ligne, puis écris ta réponse normale en dessous, sans jamais reparler de ce code.";
+
 const BASE_SYSTEM_PROMPT = [
   "Tu es l'assistant IA d'un serveur Discord. Tu discutes avec les membres de façon naturelle, utile et sympathique.",
-  "RÈGLE ABSOLUE : réponds TOUJOURS dans la langue utilisée par la personne dans son dernier message, quelle qu'elle soit (français, anglais, arabe, espagnol...), même si les messages précédents étaient dans une autre langue.",
   'Reste concis (Discord affiche mal les pavés de texte) : quelques phrases suffisent, sauf si on te demande explicitement plus de détails.',
   "Tu n'es pas un modérateur : si on te demande de bannir/kick/muter quelqu'un, dis que seul le staff peut faire ça avec les commandes du bot (/ban, /kick, /timeout...).",
   "Si un membre cherche un salon, un rôle, ou demande où trouver quelque chose sur le serveur, utilise la liste de salons/rôles fournie plus bas pour l'orienter précisément.",
@@ -37,7 +48,7 @@ const BASE_SYSTEM_PROMPT = [
 
 // Le nom "askClaude" est gardé tel quel pour ne pas avoir à toucher index.js
 // ailleurs (seul ce fichier change), même si ça parle maintenant à Gemini.
-async function askClaude({ channelId, userId, userName, userText, persona, serverContext }) {
+async function askClaude({ channelId, userId, userName, userText, persona, serverContext, savedLang, defaultLang }) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return { error: "La clé GEMINI_API_KEY n'est pas configurée sur le bot." };
 
@@ -51,6 +62,8 @@ async function askClaude({ channelId, userId, userName, userText, persona, serve
 
   const system = [
     persona ? `${BASE_SYSTEM_PROMPT}\n\nPersonnalité demandée par le staff : ${persona}` : BASE_SYSTEM_PROMPT,
+    languageInstruction({ savedLang, defaultLang }),
+    LANGCODE_INSTRUCTION,
     serverContext
       ? `\nVoici le rôle de la personne qui te parle et la structure de CE serveur Discord (pour orienter les membres et répondre à des questions comme "où est le salon X ?" ou "quel rôle pour Y ?") :\n${serverContext}\nQuand tu mentionnes un salon ou un rôle de cette liste, utilise EXACTEMENT le format <#id> ou <@&id> donné entre parenthèses (ça devient un lien/mention cliquable pour la personne). N'invente jamais un salon ou un rôle qui n'est pas dans cette liste, et ne suggère un salon que s'il apparaît dans la liste des salons visibles par cette personne.`
       : '',
@@ -84,9 +97,15 @@ async function askClaude({ channelId, userId, userName, userText, persona, serve
       console.error('Erreur API Gemini :', data?.error?.message || res.status);
       return { error: `Erreur API (${data?.error?.status || res.status}) : ${data?.error?.message || 'inconnue'}` };
     }
-    const text = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('\n').trim() || '(réponse vide)';
+    const raw = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('\n').trim() || '(réponse vide)';
+    // Extrait le tag "LANGCODE:xx" que le modèle place en première ligne
+    // (voir LANGCODE_INSTRUCTION) pour savoir dans quelle langue il a
+    // répondu, sans jamais montrer ce tag à l'utilisateur.
+    const match = raw.match(/^LANGCODE:\s*([a-zA-Z]{2,3})\s*\n+([\s\S]*)$/);
+    const langCode = match ? match[1].toLowerCase() : null;
+    const text = (match ? match[2] : raw).trim() || '(réponse vide)';
     pushHistory(key, 'assistant', text);
-    return { text: text.length > MAX_REPLY_CHARS ? `${text.slice(0, MAX_REPLY_CHARS)}…` : text };
+    return { text: text.length > MAX_REPLY_CHARS ? `${text.slice(0, MAX_REPLY_CHARS)}…` : text, langCode };
   } catch (e) {
     const msg = e.name === 'AbortError' ? 'Gemini a mis trop de temps à répondre (40s), abandon.' : e.message;
     console.error('Appel API Gemini impossible :', msg);
