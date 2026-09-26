@@ -17,23 +17,38 @@ process.on('uncaughtException', (err) => console.error('Exception non gérée :'
 // ----------------------------------------------------------------
 // Reconstruit à chaque appel (pas de cache) : les salons/rôles peuvent
 // changer entre deux messages, et c'est rapide (cache local de discord.js).
-function buildServerContext(guild) {
+function buildServerContext(guild, member) {
+  // Liste COMPLÈTE (pas de troncature) : salons visibles par la personne qui
+  // parle au bot, avec leur ID. Si `member` est fourni, on filtre selon ses
+  // permissions réelles (ViewChannel) pour que l'IA ne propose jamais un
+  // salon privé/staff à quelqu'un qui n'y a pas accès.
   const channels = guild.channels.cache
     .filter((c) => c.type === ChannelType.GuildText || c.type === ChannelType.GuildAnnouncement)
+    .filter((c) => !member || c.permissionsFor(member)?.has(PermissionFlagsBits.ViewChannel))
     .sort((a, b) => a.rawPosition - b.rawPosition)
-    .map((c) => `#${c.name} (<#${c.id}>)${c.topic ? ` — ${c.topic.slice(0, 80)}` : ''}`)
-    .slice(0, 60);
+    .map((c) => `#${c.name} — id:${c.id} (<#${c.id}>)${c.topic ? ` — ${c.topic.slice(0, 80)}` : ''}`);
 
+  // Liste COMPLÈTE de tous les rôles du serveur, avec leur ID.
   const roles = guild.roles.cache
     .filter((r) => r.id !== guild.id && !r.managed) // pas @everyone, pas les rôles de bots
     .sort((a, b) => b.position - a.position)
-    .map((r) => `@${r.name} (<@&${r.id}>)`)
-    .slice(0, 40);
+    .map((r) => `@${r.name} — id:${r.id} (<@&${r.id}>)`);
+
+  // Rôle(s) de la personne qui parle actuellement au bot, du plus haut au plus bas.
+  const memberRoles = member
+    ? guild.roles.cache
+        .filter((r) => r.id !== guild.id && member.roles.cache.has(r.id))
+        .sort((a, b) => b.position - a.position)
+        .map((r) => `@${r.name} (id:${r.id})`)
+    : [];
 
   return [
-    `Salons textuels :\n${channels.join('\n') || 'aucun'}`,
-    `Rôles :\n${roles.join('\n') || 'aucun'}`,
-  ].join('\n\n');
+    member
+      ? `Rôle(s) de LA PERSONNE QUI TE PARLE actuellement : ${memberRoles.join(', ') || 'aucun rôle particulier (membre de base)'}. Son rôle le plus élevé : ${memberRoles[0] || 'aucun'}.`
+      : '',
+    `Salons textuels que CETTE personne peut voir (liste complète) :\n${channels.join('\n') || 'aucun'}`,
+    `Tous les rôles du serveur (liste complète) :\n${roles.join('\n') || 'aucun'}`,
+  ].filter(Boolean).join('\n\n');
 }
 
 const INSTANCE_ID = crypto.randomBytes(2).toString('hex');
@@ -542,7 +557,7 @@ async function routeInteraction(interaction) {
   if (interaction.commandName === 'ask') {
     await interaction.deferReply();
     const question = interaction.options.getString('question');
-    const res = await ai.askClaude({ channelId: interaction.channelId, userId: interaction.user.id, userName: interaction.user.username, userText: question, persona: g.aiPersona, serverContext: buildServerContext(guild) });
+    const res = await ai.askClaude({ channelId: interaction.channelId, userId: interaction.user.id, userName: interaction.user.username, userText: question, persona: g.aiPersona, serverContext: buildServerContext(guild, interaction.member) });
     await interaction.editReply(res.error ? `❌ ${res.error}` : res.text);
     return;
   }
@@ -588,7 +603,7 @@ client.on(Events.MessageCreate, async (message) => {
     const text = message.content.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim();
     if (!text) return;
     await message.channel.sendTyping().catch(() => {});
-    const res = await ai.askClaude({ channelId: message.channelId, userId: message.author.id, userName: message.author.username, userText: text, persona: g.aiPersona, serverContext: buildServerContext(message.guild) });
+    const res = await ai.askClaude({ channelId: message.channelId, userId: message.author.id, userName: message.author.username, userText: text, persona: g.aiPersona, serverContext: buildServerContext(message.guild, message.member) });
     const out = res.error ? `❌ ${res.error}` : res.text;
     await message.reply({ content: out, allowedMentions: { repliedUser: false } });
   } catch (e) { console.error('Erreur MessageCreate :', e); }

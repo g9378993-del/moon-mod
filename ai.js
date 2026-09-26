@@ -30,6 +30,8 @@ const BASE_SYSTEM_PROMPT = [
   'Reste concis (Discord affiche mal les pavés de texte) : quelques phrases suffisent, sauf si on te demande explicitement plus de détails.',
   "Tu n'es pas un modérateur : si on te demande de bannir/kick/muter quelqu'un, dis que seul le staff peut faire ça avec les commandes du bot (/ban, /kick, /timeout...).",
   "Si un membre cherche un salon, un rôle, ou demande où trouver quelque chose sur le serveur, utilise la liste de salons/rôles fournie plus bas pour l'orienter précisément.",
+  "Tu sais toujours quel(s) rôle(s) a la personne qui te parle (indiqué plus bas) : sers-t'en pour être précis, par exemple pour adapter ton ton ou confirmer ce qu'elle peut faire selon son rôle.",
+  "La liste des salons fournie plus bas est déjà filtrée : elle ne contient QUE les salons que CETTE personne peut voir vu son/ses rôle(s). Ne propose donc jamais un salon en dehors de cette liste, et si elle demande un salon qui n'y figure pas, dis-lui simplement que tu ne le vois pas depuis son rôle actuel (sans jamais révéler le nom d'un salon caché).",
 ].join('\n');
 
 // Le nom "askClaude" est gardé tel quel pour ne pas avoir à toucher index.js
@@ -49,7 +51,7 @@ async function askClaude({ channelId, userId, userName, userText, persona, serve
   const system = [
     persona ? `${BASE_SYSTEM_PROMPT}\n\nPersonnalité demandée par le staff : ${persona}` : BASE_SYSTEM_PROMPT,
     serverContext
-      ? `\nVoici la structure de CE serveur Discord (pour orienter les membres et répondre à des questions comme "où est le salon X ?" ou "quel rôle pour Y ?") :\n${serverContext}\nQuand tu mentionnes un salon ou un rôle de cette liste, utilise EXACTEMENT le format <#id> ou <@&id> donné entre parenthèses (ça devient un lien/mention cliquable pour la personne). N'invente jamais un salon ou un rôle qui n'est pas dans cette liste.`
+      ? `\nVoici le rôle de la personne qui te parle et la structure de CE serveur Discord (pour orienter les membres et répondre à des questions comme "où est le salon X ?" ou "quel rôle pour Y ?") :\n${serverContext}\nQuand tu mentionnes un salon ou un rôle de cette liste, utilise EXACTEMENT le format <#id> ou <@&id> donné entre parenthèses (ça devient un lien/mention cliquable pour la personne). N'invente jamais un salon ou un rôle qui n'est pas dans cette liste, et ne suggère un salon que s'il apparaît dans la liste des salons visibles par cette personne.`
       : '',
   ].filter(Boolean).join('\n');
 
