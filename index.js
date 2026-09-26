@@ -45,6 +45,13 @@ function buildSpeakerInfo(member) {
   return `La personne qui te parle s'appelle ${member.displayName} (<@${member.id}>) et a le(s) rôle(s) suivant(s) : ${roles.length ? roles.join(', ') : 'aucun rôle particulier'}.`;
 }
 
+// Le contexte complet (salons + rôles) coûte cher en tokens (quotas gratuits
+// serrés) : on ne l'envoie que quand la question semble vraiment en parler,
+// sinon on économise ces tokens sur chaque message.
+function needsServerContext(text) {
+  return /\b(salon|canal|channel|rôle|role|permission)s?\b/i.test(text);
+}
+
 const INSTANCE_ID = crypto.randomBytes(2).toString('hex');
 const STARTED_AT = Date.now();
 const dup = { count: 0, lastAt: null };
@@ -551,7 +558,7 @@ async function routeInteraction(interaction) {
   if (interaction.commandName === 'ask') {
     await interaction.deferReply();
     const question = interaction.options.getString('question');
-    const res = await ai.askClaude({ channelId: interaction.channelId, userId: interaction.user.id, userName: interaction.user.username, userText: question, persona: g.aiPersona, serverContext: buildServerContext(guild), speakerInfo: buildSpeakerInfo(interaction.member), guild });
+    const res = await ai.askClaude({ channelId: interaction.channelId, userId: interaction.user.id, userName: interaction.user.username, userText: question, persona: g.aiPersona, serverContext: needsServerContext(question) ? buildServerContext(guild) : null, speakerInfo: buildSpeakerInfo(interaction.member), guild });
     await interaction.editReply(res.error ? `❌ ${res.error}` : res.text);
     return;
   }
@@ -597,7 +604,7 @@ client.on(Events.MessageCreate, async (message) => {
     const text = message.content.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim();
     if (!text) return;
     await message.channel.sendTyping().catch(() => {});
-    const res = await ai.askClaude({ channelId: message.channelId, userId: message.author.id, userName: message.author.username, userText: text, persona: g.aiPersona, serverContext: buildServerContext(message.guild), speakerInfo: buildSpeakerInfo(message.member), guild: message.guild });
+    const res = await ai.askClaude({ channelId: message.channelId, userId: message.author.id, userName: message.author.username, userText: text, persona: g.aiPersona, serverContext: needsServerContext(text) ? buildServerContext(message.guild) : null, speakerInfo: buildSpeakerInfo(message.member), guild: message.guild });
     const out = res.error ? `❌ ${res.error}` : res.text;
     await message.reply({ content: out, allowedMentions: { repliedUser: false } });
   } catch (e) { console.error('Erreur MessageCreate :', e); }

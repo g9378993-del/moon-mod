@@ -156,6 +156,23 @@ async function callGroqOnce(apiKey, messages) {
   }
 }
 
+// Si l'erreur indique un délai d'attente court ("réessaie dans X secondes" —
+// Groq et Gemini formulent ça différemment mais donnent toujours un chiffre),
+// on attend ce délai puis on retente UNE fois, invisible pour l'utilisateur.
+// Sans ce délai dans le message (ex: quota journalier épuisé), pas de retry :
+// ça ne servirait à rien et ferait juste attendre l'utilisateur pour rien.
+async function withRetry(fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    const m = String(e.message).match(/(?:try again|retry) in ([\d.]+)\s*s/i);
+    if (!m) throw e;
+    const waitMs = Math.min(Math.ceil(parseFloat(m[1]) * 1000) + 300, 15000);
+    await new Promise((r) => setTimeout(r, waitMs));
+    return fn();
+  }
+}
+
 async function tryGroq({ system, historyMsgs, guild }) {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new Error('GROQ_API_KEY non configurée');
@@ -267,7 +284,7 @@ async function askClaude({ channelId, userId, userName, userText, persona, serve
 
   if (process.env.GROQ_API_KEY) {
     try {
-      const text = await tryGroq({ system, historyMsgs, guild });
+      const text = await withRetry(() => tryGroq({ system, historyMsgs, guild }));
       if (text) {
         pushHistory(key, 'assistant', text);
         return { text: text.length > MAX_REPLY_CHARS ? `${text.slice(0, MAX_REPLY_CHARS)}…` : text };
@@ -282,7 +299,7 @@ async function askClaude({ channelId, userId, userName, userText, persona, serve
 
   if (process.env.GEMINI_API_KEY) {
     try {
-      const text = await tryGemini({ system, historyMsgs, guild });
+      const text = await withRetry(() => tryGemini({ system, historyMsgs, guild }));
       if (text) {
         pushHistory(key, 'assistant', text);
         return { text: text.length > MAX_REPLY_CHARS ? `${text.slice(0, MAX_REPLY_CHARS)}…` : text };
