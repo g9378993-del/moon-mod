@@ -16,7 +16,7 @@
 // au redémarrage du bot.
 
 const MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-20b';
-const MAX_HISTORY_MESSAGES = 12; // 6 échanges question/réponse
+const MAX_HISTORY_MESSAGES = 8;  // 4 échanges question/réponse (réduit pour rester sous le quota gratuit)
 const MAX_REPLY_CHARS = 1900;    // marge sous la limite Discord de 2000
 const MAX_TOOL_ROUNDS = 4;       // sécurité anti-boucle infinie d'appels d'outils
 
@@ -35,6 +35,7 @@ function resetHistory(channelId, userId) { histories.delete(historyKey(channelId
 
 const BASE_SYSTEM_PROMPT = [
   "Tu es l'assistant IA d'un serveur Discord. Tu discutes avec les membres de façon naturelle, utile et sympathique.",
+  "Si on te demande ton nom ou qui tu es, dis que tu es simplement l'assistant IA de ce serveur Discord. Ne dis JAMAIS que tu es ChatGPT, GPT, OpenAI, Llama, Gemini, ou le produit d'une entreprise en particulier — tu n'as pas de nom de marque à donner.",
   "RÈGLE ABSOLUE : réponds TOUJOURS dans la langue utilisée par la personne dans son dernier message, quelle qu'elle soit (français, anglais, arabe, espagnol...), même si les messages précédents étaient dans une autre langue.",
   'Reste concis (Discord affiche mal les pavés de texte) : quelques phrases suffisent, sauf si on te demande explicitement plus de détails.',
   "Tu n'es pas un modérateur : si on te demande de bannir/kick/muter quelqu'un, dis que seul le staff peut faire ça avec les commandes du bot (/ban, /kick, /timeout...).",
@@ -156,7 +157,7 @@ async function askClaude({ channelId, userId, userName, userText, persona, serve
       const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({ model: MODEL, messages, tools: TOOLS, max_tokens: 700 }),
+        body: JSON.stringify({ model: MODEL, messages, tools: TOOLS, max_tokens: 500 }),
         signal: controller.signal,
       });
       const data = await res.json();
