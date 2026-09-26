@@ -1,0 +1,20 @@
+# Token de TON bot (Developer Portal > Bot > Reset Token). Ne le partage JAMAIS.
+DISCORD_TOKEN=colle_ton_token_ici
+# Application ID (Developer Portal > General Information > Application ID)
+CLIENT_ID=colle_id_application_ici
+# Ton ID Discord (clic droit sur ton profil > Copier l'identifiant, mode développeur activé)
+OWNER_ID=ton_id_discord
+
+# MongoDB (stockage persistant : configs, warns, cases). Sans ça, tout est
+# perdu à chaque redémarrage de Render.
+MONGODB_URI=
+
+# Clé API Anthropic (https://console.anthropic.com/settings/keys), pour le chat IA.
+ANTHROPIC_API_KEY=
+# Modèle utilisé pour le chat (rapide/pas cher par défaut). Change en
+# claude-sonnet-4-6 pour des réponses plus fines (plus cher).
+CLAUDE_MODEL=claude-haiku-4-5
+
+# URL publique Render (https://ton-app.onrender.com), pour l'anti-veille.
+PUBLIC_URL=
+PORT=3000

@@ -1,0 +1,16 @@
+{
+  "name": "mod-bot",
+  "version": "1.0.0",
+  "description": "Bot Discord modérateur/manager complet + chat IA multilingue (Claude)",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "mongodb": "^6.10.0"
+  },
+  "engines": { "node": ">=18" }
+}
