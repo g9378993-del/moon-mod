@@ -15,7 +15,7 @@
 // toujours, et ça évite de faire grossir la base pour rien. Elle est vidée
 // au redémarrage du bot.
 
-const MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+const MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-20b';
 const MAX_HISTORY_MESSAGES = 12; // 6 échanges question/réponse
 const MAX_REPLY_CHARS = 1900;    // marge sous la limite Discord de 2000
 const MAX_TOOL_ROUNDS = 4;       // sécurité anti-boucle infinie d'appels d'outils
