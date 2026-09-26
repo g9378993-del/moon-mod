@@ -12,7 +12,7 @@
 // toujours, et ça évite de faire grossir la base pour rien. Elle est vidée
 // au redémarrage du bot.
 
-const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
+const MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
 const MAX_HISTORY_MESSAGES = 12; // 6 échanges question/réponse
 const MAX_REPLY_CHARS = 1900;    // marge sous la limite Discord de 2000
 const MAX_TOOL_ROUNDS = 4;       // sécurité anti-boucle infinie d'appels d'outils
@@ -36,7 +36,6 @@ const BASE_SYSTEM_PROMPT = [
   'Reste concis (Discord affiche mal les pavés de texte) : quelques phrases suffisent, sauf si on te demande explicitement plus de détails.',
   "Tu n'es pas un modérateur : si on te demande de bannir/kick/muter quelqu'un, dis que seul le staff peut faire ça avec les commandes du bot (/ban, /kick, /timeout...).",
   "Si un membre cherche un salon, un rôle, ou demande où trouver quelque chose sur le serveur, utilise la liste de salons/rôles fournie plus bas pour l'orienter précisément.",
-  "Tu as accès à une recherche web (Google) pour toute question sur l'actualité, un jeu (dont les jeux Roblox), une musique, une célébrité, etc. Utilise-la dès que tes connaissances seules ne suffisent pas ou pourraient être dépassées.",
   "Tu as un outil pour chercher des vidéos YouTube (search_youtube) : utilise-le si on te demande une vidéo ou une musique précise, et donne le lien direct trouvé.",
   "Tu as un outil pour lire le profil d'un membre du serveur (get_member_info) : utilise-le si on te demande des infos sur quelqu'un (rôles, date d'arrivée, etc.), y compris sur la personne qui te parle si elle demande 'et moi ?'.",
 ].join('\n');
@@ -140,7 +139,6 @@ async function askClaude({ channelId, userId, userName, userText, persona, serve
   ].filter(Boolean).join('\n');
 
   const tools = [
-    { googleSearch: {} },
     { functionDeclarations: FUNCTION_DECLARATIONS },
   ];
 
