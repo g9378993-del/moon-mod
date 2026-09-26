@@ -1,12 +1,13 @@
-// Chat IA via l'API Anthropic (Claude). Nécessite ANTHROPIC_API_KEY dans les
-// variables d'environnement (jamais dans le code ni dans un message Discord).
+// Chat IA via l'API Google Gemini (gratuite). Nécessite GEMINI_API_KEY dans
+// les variables d'environnement (jamais dans le code ni dans un message
+// Discord). Clé à récupérer gratuitement sur https://aistudio.google.com/apikey
 //
 // Mémoire de conversation : en RAM seulement (par salon + par personne), pas
 // en base — c'est un historique de discussion, pas une donnée à garder pour
 // toujours, et ça évite de faire grossir la base pour rien. Elle est vidée
 // au redémarrage du bot.
 
-const MODEL = process.env.CLAUDE_MODEL || 'claude-haiku-4-5';
+const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
 const MAX_HISTORY_MESSAGES = 12; // 6 échanges question/réponse
 const MAX_REPLY_CHARS = 1900;    // marge sous la limite Discord de 2000
 
@@ -30,33 +31,46 @@ const BASE_SYSTEM_PROMPT = [
   "Tu n'es pas un modérateur : si on te demande de bannir/kick/muter quelqu'un, dis que seul le staff peut faire ça avec les commandes du bot (/ban, /kick, /timeout...).",
 ].join('\n');
 
+// Le nom "askClaude" est gardé tel quel pour ne pas avoir à toucher index.js
+// ailleurs (seul ce fichier change), même si ça parle maintenant à Gemini.
 async function askClaude({ channelId, userId, userName, userText, persona }) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return { error: "La clé ANTHROPIC_API_KEY n'est pas configurée sur le bot." };
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return { error: "La clé GEMINI_API_KEY n'est pas configurée sur le bot." };
 
   const key = historyKey(channelId, userId);
   pushHistory(key, 'user', userText);
-  const messages = (histories.get(key) || []).map((m) => ({ role: m.role, content: m.content }));
+  // Gemini utilise les rôles "user" et "model" (pas "assistant").
+  const contents = (histories.get(key) || []).map((m) => ({
+    role: m.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: m.content }],
+  }));
 
   const system = persona ? `${BASE_SYSTEM_PROMPT}\n\nPersonnalité demandée par le staff : ${persona}` : BASE_SYSTEM_PROMPT;
 
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: MODEL, max_tokens: 600, system, messages }),
-    });
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          contents,
+          systemInstruction: { parts: [{ text: system }] },
+          generationConfig: { maxOutputTokens: 600 },
+        }),
+      }
+    );
     const data = await res.json();
     if (!res.ok) {
-      console.error('Erreur API Anthropic :', data?.error?.message || res.status);
-      return { error: `Erreur API (${data?.error?.type || res.status}) : ${data?.error?.message || 'inconnue'}` };
+      console.error('Erreur API Gemini :', data?.error?.message || res.status);
+      return { error: `Erreur API (${data?.error?.status || res.status}) : ${data?.error?.message || 'inconnue'}` };
     }
-    const text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim() || '(réponse vide)';
+    const text = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('\n').trim() || '(réponse vide)';
     pushHistory(key, 'assistant', text);
     return { text: text.length > MAX_REPLY_CHARS ? `${text.slice(0, MAX_REPLY_CHARS)}…` : text };
   } catch (e) {
-    console.error('Appel API Anthropic impossible :', e.message);
-    return { error: `Impossible de contacter Claude (${e.message}).` };
+    console.error('Appel API Gemini impossible :', e.message);
+    return { error: `Impossible de contacter Gemini (${e.message}).` };
   }
 }
 
