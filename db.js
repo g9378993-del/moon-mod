@@ -33,6 +33,7 @@ function defaultGuild() {
     aiChannels: [],           // salons où l'IA répond à TOUS les messages, pas juste aux mentions
     aiEnabled: true,          // interrupteur général : répondre quand le bot est mentionné
     aiPersona: null,          // instruction supplémentaire optionnelle (ton, personnalité)
+    cmdPerms: {},             // commande -> [roleId] autorisés en plus du staff (/permscmnds)
   };
 }
 function normalizeGuild(data) {

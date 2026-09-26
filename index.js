@@ -53,17 +53,98 @@ function buildServerContext(guild, member, otherMembers = []) {
       ? `Rôle(s) de LA PERSONNE QUI TE PARLE actuellement : ${memberRoles.join(', ') || 'aucun rôle particulier (membre de base)'}. Son rôle le plus élevé : ${memberRoles[0] || 'aucun'}.`
       : '',
     mentionedLines.length
-      ? `Rôle(s) des personnes @mentionnées dans ce message :\n${mentionedLines.join('\n')}`
+      ? `Rôle(s) d'autres personnes reconnues dans ce message (par @mention ou par pseudo cité) :\n${mentionedLines.join('\n')}`
       : '',
     `Salons textuels que CETTE personne peut voir (liste complète) :\n${channels.join('\n') || 'aucun'}`,
     `Tous les rôles du serveur (liste complète) :\n${roles.join('\n') || 'aucun'}`,
   ].filter(Boolean).join('\n\n');
 }
 
+// Petits mots vides à ignorer quand on cherche un nom de personne dans une
+// phrase (sinon "le", "salon", "rôle"... seraient tentés comme des pseudos).
+const NAME_STOPWORDS = new Set(['les','des','une','que','qui','quoi','pour','avec','dans','sur','est','sont','elle','cette','ces','son','ses','mon','mes','ton','tes','notre','nos','votre','vos','leur','leurs','quel','quelle','quels','quelles','rôle','role','roles','rôles','salon','salons','discord','bot','avoir','fait','faire','être','etre','alors','donc','comme','bien','très','tres','ici','nous','vous','ils','elles']);
+
+// Cherche, dans un texte libre, un membre cité par son pseudo/pseudonyme SANS
+// @mention (ex: "c'est quoi le rôle de Kevin ?"). Recherche par mots du
+// message via l'API de recherche de membres Discord, en ne gardant que les
+// correspondances EXACTES (pas de préfixe) pour éviter les faux positifs.
+async function resolveMembersByName(guild, text, excludeIds = []) {
+  const tokens = [...new Set((text.match(/[\p{L}][\p{L}'-]{1,}/gu) || [])
+    .map((t) => t.toLowerCase())
+    .filter((t) => t.length >= 3 && !NAME_STOPWORDS.has(t)))].slice(0, 6);
+  if (!tokens.length) return [];
+
+  const results = await Promise.all(tokens.map((t) => guild.members.search({ query: t, limit: 3 }).catch(() => null)));
+  const found = new Map();
+  results.forEach((col, i) => {
+    if (!col) return;
+    const token = tokens[i];
+    for (const m of col.values()) {
+      if (excludeIds.includes(m.id) || found.has(m.id)) continue;
+      const candidates = [m.user.username, m.user.globalName, m.nickname].filter(Boolean).map((s) => s.toLowerCase());
+      if (candidates.includes(token)) found.set(m.id, m);
+    }
+  });
+  return [...found.values()];
+}
+
 const INSTANCE_ID = crypto.randomBytes(2).toString('hex');
 const STARTED_AT = Date.now();
 const dup = { count: 0, lastAt: null };
 const isBotOwner = (userId) => !!process.env.OWNER_ID && userId === process.env.OWNER_ID;
+
+// ----------------------------------------------------------------
+// LOGS DEMANDÉS EN PARLANT AU BOT ("montre les logs", "logs du rôle X"...)
+// ----------------------------------------------------------------
+const LOGS_REGEX = /\blogs?\b/i;
+const CASE_TITLES = {
+  kick: 'Kick', ban: 'Ban', unban: 'Unban', warn: 'Avertissement', timeout: 'Timeout', untimeout: 'Fin de timeout',
+  'automod-delete': 'Automod (suppression)', 'automod-timeout': 'Automod (timeout)', raid: 'Anti-raid',
+};
+
+// Cherche un rôle cité dans le texte (par @mention ou par son nom exact),
+// pour filtrer les logs sur ce rôle. Les noms les plus longs sont testés en
+// premier pour éviter qu'un rôle court (ex: "VIP") ne matche à tort à
+// l'intérieur d'un nom plus long.
+function findRoleInText(guild, text) {
+  const mention = text.match(/<@&(\d+)>/);
+  if (mention) { const r = guild.roles.cache.get(mention[1]); if (r) return r; }
+  const roles = [...guild.roles.cache.values()]
+    .filter((r) => r.id !== guild.id && !r.managed && r.name.length >= 2)
+    .sort((a, b) => b.name.length - a.name.length);
+  for (const r of roles) {
+    const re = new RegExp(`\\b${r.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+    if (re.test(text)) return r;
+  }
+  return null;
+}
+
+// Gère les demandes de logs faites EN PARLANT au bot ("montre-moi les logs",
+// "les logs du rôle Staff"...). Renvoie null si ce n'est pas une demande de
+// logs (le message continue normalement vers l'IA). Sinon renvoie le texte à
+// répondre DIRECTEMENT, sans passer par Gemini — l'accès est TOUJOURS
+// vérifié via hasModPerms (même check que les commandes de modération), donc
+// ça ne marche jamais pour n'importe qui, seulement pour le staff.
+async function handleLogsIntent({ guild, member, g, text }) {
+  if (!LOGS_REGEX.test(text)) return null;
+  if (!mod.hasModPerms(member, g)) return '❌ Seul le staff peut consulter les logs de modération.';
+
+  const role = findRoleInText(guild, text);
+  let cases = g.cases || [];
+
+  if (role) {
+    let roleMembers = role.members; // cache
+    try { await guild.members.fetch(); roleMembers = role.members; } catch (e) { /* on garde le cache si le fetch échoue */ }
+    const ids = new Set(roleMembers.map((m) => m.id));
+    cases = cases.filter((c) => ids.has(c.userId));
+    if (!cases.length) return `📋 Aucun log trouvé pour des membres ayant le rôle <@&${role.id}>.`;
+  }
+
+  const recent = [...cases].sort((a, b) => b.createdAt - a.createdAt).slice(0, 15);
+  const lines = recent.map((c) => `#${c.id} • **${CASE_TITLES[c.type] || c.type}** • <@${c.userId}> • <t:${Math.floor(c.createdAt / 1000)}:R>${c.reason ? ` — ${c.reason}` : ''}`);
+  const header = role ? `📋 Derniers logs pour le rôle <@&${role.id}> (${cases.length} au total) :` : `📋 Derniers logs (${cases.length} au total) :`;
+  return `${header}\n${lines.join('\n')}`;
+}
 
 // Lancée tout de suite (voir le bas du fichier). Le bot attend cette promesse
 // avant de toucher aux données, mais ça ne bloque plus le démarrage du
@@ -187,6 +268,18 @@ const commands = [
 
   new SlashCommandBuilder().setName('ask').setDescription("Poser une question à l'IA (répond dans ta langue)")
     .addStringOption((o) => o.setName('question').setDescription('Ta question').setRequired(true)),
+
+  new SlashCommandBuilder().setName('permscmnds').setDescription('Autoriser/retirer un rôle sur une commande précise (en plus du staff)')
+    .addSubcommand((s) => s.setName('allow').setDescription('Autoriser un rôle à utiliser une commande')
+      .addStringOption((o) => o.setName('commande').setDescription('Nom de la commande, ex: kick').setRequired(true))
+      .addRoleOption((o) => o.setName('role').setDescription('Le rôle').setRequired(true)))
+    .addSubcommand((s) => s.setName('deny').setDescription('Retirer cette autorisation')
+      .addStringOption((o) => o.setName('commande').setDescription('Nom de la commande').setRequired(true))
+      .addRoleOption((o) => o.setName('role').setDescription('Le rôle').setRequired(true)))
+    .addSubcommand((s) => s.setName('list').setDescription('Voir les autorisations par commande')),
+
+  new SlashCommandBuilder().setName('findsalon').setDescription('Chercher un salon par mot-clé (nom ou description)')
+    .addStringOption((o) => o.setName('mot').setDescription('Mot-clé à chercher').setRequired(true)),
 
   new SlashCommandBuilder().setName('help').setDescription('Voir toutes les commandes'),
 ].map((c) => c.setDMPermission(false).toJSON());
@@ -524,12 +617,48 @@ async function handleModCommand(interaction, guild, g) {
     if (sub === 'reset') { ai.resetHistory(interaction.channelId, interaction.user.id); await reply('🧹 Conversation oubliée.'); return; }
   }
 
+  if (cmd === 'permscmnds') {
+    const sub = interaction.options.getSubcommand();
+    if (sub === 'list') {
+      const lines = Object.entries(g.cmdPerms || {}).filter(([, r]) => r.length).map(([c, r]) => `/${c} : ${r.map((id) => `<@&${id}>`).join(' ')}`);
+      await reply(lines.length ? `🔐 Autorisations par commande :\n${lines.join('\n')}` : 'Aucune autorisation par commande configurée.');
+      return;
+    }
+    const commande = interaction.options.getString('commande').toLowerCase().replace(/^\//, '');
+    const role = interaction.options.getRole('role');
+    if (!g.cmdPerms) g.cmdPerms = {};
+    if (!g.cmdPerms[commande]) g.cmdPerms[commande] = [];
+    if (sub === 'allow') {
+      if (!g.cmdPerms[commande].includes(role.id)) g.cmdPerms[commande].push(role.id);
+      await db.save(guild.id); await reply(`✅ <@&${role.id}> peut maintenant utiliser \`/${commande}\`.`); return;
+    }
+    if (sub === 'deny') {
+      g.cmdPerms[commande] = g.cmdPerms[commande].filter((r) => r !== role.id);
+      await db.save(guild.id); await reply(`✅ <@&${role.id}> n'a plus cette autorisation sur \`/${commande}\`.`); return;
+    }
+  }
+
+  if (cmd === 'findsalon') {
+    const raw = interaction.options.getString('mot');
+    const query = raw.toLowerCase();
+    const matches = guild.channels.cache
+      .filter((c) => c.type === ChannelType.GuildText || c.type === ChannelType.GuildAnnouncement)
+      .filter((c) => c.permissionsFor(interaction.member)?.has(PermissionFlagsBits.ViewChannel))
+      .filter((c) => c.name.toLowerCase().includes(query) || (c.topic || '').toLowerCase().includes(query))
+      .sort((a, b) => a.rawPosition - b.rawPosition);
+    if (!matches.size) { await reply(`🔍 Aucun salon trouvé pour "${raw}".`); return; }
+    const lines = [...matches.values()].slice(0, 25).map((c) => `${c} — \`#${c.name}\`${c.topic ? ` : ${c.topic.slice(0, 80)}` : ''}`);
+    await reply(`🔍 ${matches.size} salon(s) trouvé(s) pour "${raw}" :\n${lines.join('\n')}`);
+    return;
+  }
+
   if (cmd === 'help') {
     const embed = new EmbedBuilder().setColor(mod.COLORS.info).setTitle('📘 Commandes du bot').addFields(
       { name: 'Modération', value: '`/kick` `/ban` `/unban` `/timeout` `/untimeout` `/warn` `/warnings` `/unwarn` `/clear` `/slowmode` `/lock` `/unlock` `/lockdown` `/unlockdown`' },
       { name: 'Historique', value: '`/case` `/modlogs`' },
-      { name: 'Configuration', value: '`/setmodlog` `/staffrole` `/warnactions` `/automod`' },
-      { name: 'IA (Claude)', value: '`/ai` (config) · `/ask` (poser une question) · mentionne le bot ou écris dans un salon IA pour discuter, dans n\'importe quelle langue' },
+      { name: 'Configuration', value: '`/setmodlog` `/staffrole` `/permscmnds` `/warnactions` `/automod`' },
+      { name: 'Salons', value: '`/findsalon` (chercher un salon par mot-clé)' },
+      { name: 'IA (Claude)', value: '`/ai` (config) · `/ask` (poser une question) · mentionne le bot ou écris dans un salon IA pour discuter, dans n\'importe quelle langue. Demande-lui "montre les logs" ou "logs du rôle X" (staff uniquement).' },
     );
     await interaction.editReply({ embeds: [embed] });
     return;
@@ -566,20 +695,25 @@ async function routeInteraction(interaction) {
   if (interaction.commandName === 'ask') {
     await interaction.deferReply();
     const question = interaction.options.getString('question');
+    const logsReply = await handleLogsIntent({ guild, member: interaction.member, g, text: question });
+    if (logsReply) { await interaction.editReply({ content: logsReply, allowedMentions: { parse: [] } }); return; }
     const mentionedIds = [...new Set([...question.matchAll(/<@!?(\d+)>/g)].map((m) => m[1]))];
-    const otherMembers = (await Promise.all(mentionedIds.map((id) => guild.members.cache.get(id) || guild.members.fetch(id).catch(() => null)))).filter(Boolean);
+    const mentionedMembers = (await Promise.all(mentionedIds.map((id) => guild.members.cache.get(id) || guild.members.fetch(id).catch(() => null)))).filter(Boolean);
+    const namedMembers = await resolveMembersByName(guild, question, [interaction.user.id, ...mentionedMembers.map((m) => m.id)]);
+    const otherMembers = [...mentionedMembers, ...namedMembers];
     const res = await ai.askClaude({ channelId: interaction.channelId, userId: interaction.user.id, userName: interaction.user.username, userText: question, persona: g.aiPersona, serverContext: buildServerContext(guild, interaction.member, otherMembers) });
     await interaction.editReply(res.error ? `❌ ${res.error}` : res.text);
     return;
   }
 
-  const nonStaffAllowed = new Set(['warnings', 'help']); // /warnings gère lui-même le cas "soi-même"
-  if (!nonStaffAllowed.has(interaction.commandName) && !mod.hasModPerms(interaction.member, g)) {
+  const nonStaffAllowed = new Set(['warnings', 'help', 'findsalon']); // /warnings gère lui-même le cas "soi-même"
+  const roleAllowedForCmd = (g.cmdPerms?.[interaction.commandName] || []).some((r) => interaction.member.roles.cache.has(r));
+  if (!nonStaffAllowed.has(interaction.commandName) && !roleAllowedForCmd && !mod.hasModPerms(interaction.member, g)) {
     await interaction.reply({ content: "❌ Tu n'as pas la permission d'utiliser cette commande (Administrateur, Gérer le serveur, ou un rôle autorisé via `/staffrole`).", ephemeral: true });
     return;
   }
 
-  await interaction.deferReply({ ephemeral: ['warnings', 'modlogs', 'case', 'staffrole', 'warnactions', 'automod', 'ai', 'help', 'setmodlog'].includes(interaction.commandName) });
+  await interaction.deferReply({ ephemeral: ['warnings', 'modlogs', 'case', 'staffrole', 'warnactions', 'automod', 'ai', 'help', 'setmodlog', 'permscmnds'].includes(interaction.commandName) });
   await handleModCommand(interaction, guild, g);
 }
 
@@ -613,8 +747,14 @@ client.on(Events.MessageCreate, async (message) => {
 
     const text = message.content.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim();
     if (!text) return;
+
+    const logsReply = await handleLogsIntent({ guild: message.guild, member: message.member, g, text });
+    if (logsReply) { await message.reply({ content: logsReply, allowedMentions: { parse: [] } }); return; }
+
     await message.channel.sendTyping().catch(() => {});
-    const otherMembers = [...message.mentions.members.values()].filter((m) => m.id !== client.user.id);
+    const mentionedMembers = [...message.mentions.members.values()].filter((m) => m.id !== client.user.id);
+    const namedMembers = await resolveMembersByName(message.guild, text, [message.author.id, client.user.id, ...mentionedMembers.map((m) => m.id)]);
+    const otherMembers = [...mentionedMembers, ...namedMembers];
     const res = await ai.askClaude({ channelId: message.channelId, userId: message.author.id, userName: message.author.username, userText: text, persona: g.aiPersona, serverContext: buildServerContext(message.guild, message.member, otherMembers) });
     const out = res.error ? `❌ ${res.error}` : res.text;
     await message.reply({ content: out, allowedMentions: { repliedUser: false } });
