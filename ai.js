@@ -1,13 +1,17 @@
-// Chat IA via l'API Groq (gratuite, sans carte bancaire). Nécessite
-// GROQ_API_KEY dans les variables d'environnement (jamais dans le code ni
-// dans un message Discord). Clé à récupérer gratuitement sur https://console.groq.com/keys
+// Chat IA avec BASCULE AUTOMATIQUE entre deux fournisseurs gratuits :
+//   1) Groq (essayé en premier : plus rapide, quota clairement documenté)
+//   2) Gemini (utilisé automatiquement si Groq est indisponible/limité)
+// Les deux sont gratuits, sans carte bancaire. Avoir les deux clés remplies
+// cumule leurs quotas gratuits respectifs, donc beaucoup moins de coupures.
 //
-// Pourquoi Groq et pas Gemini : quota journalier gratuit bien plus large et
-// surtout beaucoup plus stable dans le temps (pas de changement de nom de
-// modèle ni de règles tous les 15 jours).
+// Clés à mettre dans les variables d'environnement (jamais dans le code ni
+// dans un message Discord) :
+//   GROQ_API_KEY   → gratuite sur https://console.groq.com/keys
+//   GEMINI_API_KEY → gratuite sur https://aistudio.google.com/apikey
+// Si une seule des deux est configurée, le bot l'utilise seule (pas de bascule).
 //
 // Deux "outils" en plus du simple chat :
-//  - Recherche YouTube (nécessite une 2e clé gratuite, optionnelle : YOUTUBE_API_KEY)
+//  - Recherche YouTube (nécessite une 3e clé gratuite, optionnelle : YOUTUBE_API_KEY)
 //  - Lecture du profil d'un membre du serveur (rôles, date d'arrivée...)
 //
 // Mémoire de conversation : en RAM seulement (par salon + par personne), pas
@@ -15,12 +19,14 @@
 // toujours, et ça évite de faire grossir la base pour rien. Elle est vidée
 // au redémarrage du bot.
 
-const MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-20b';
-const MAX_HISTORY_MESSAGES = 8;  // 4 échanges question/réponse (réduit pour rester sous le quota gratuit)
+const GROQ_MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-20b';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
+const MAX_HISTORY_MESSAGES = 4;  // 2 échanges question/réponse (le quota gratuit est très serré)
 const MAX_REPLY_CHARS = 1900;    // marge sous la limite Discord de 2000
 const MAX_TOOL_ROUNDS = 4;       // sécurité anti-boucle infinie d'appels d'outils
+const CALL_TIMEOUT_MS = 40000;
 
-const histories = new Map(); // `${channelId}:${userId}` -> [{role, content}, ...]
+const histories = new Map(); // `${channelId}:${userId}` -> [{role: 'user'|'assistant', content}, ...]
 
 function historyKey(channelId, userId) { return `${channelId}:${userId}`; }
 
@@ -46,32 +52,26 @@ const BASE_SYSTEM_PROMPT = [
 ].join('\n');
 
 // ------------------------------------------------------------------
-// OUTILS (functions) QUE LE MODÈLE PEUT APPELER (format OpenAI, compatible Groq)
+// OUTILS (functions) — description commune, adaptée au format de chaque fournisseur
 // ------------------------------------------------------------------
 
-const TOOLS = [
+const TOOL_SPECS = [
   {
-    type: 'function',
-    function: {
-      name: 'search_youtube',
-      description: "Cherche une vidéo ou une musique sur YouTube et renvoie le titre et le lien direct des meilleurs résultats.",
-      parameters: {
-        type: 'object',
-        properties: { query: { type: 'string', description: 'Termes de recherche (titre de vidéo, nom de musique/artiste...)' } },
-        required: ['query'],
-      },
+    name: 'search_youtube',
+    description: "Cherche une vidéo ou une musique sur YouTube et renvoie le titre et le lien direct des meilleurs résultats.",
+    parameters: {
+      type: 'object',
+      properties: { query: { type: 'string', description: 'Termes de recherche (titre de vidéo, nom de musique/artiste...)' } },
+      required: ['query'],
     },
   },
   {
-    type: 'function',
-    function: {
-      name: 'get_member_info',
-      description: "Renvoie les infos d'un membre du serveur Discord (pseudo, rôles, date d'arrivée sur le serveur, date de création du compte). Cherche par pseudo, surnom, ou mention.",
-      parameters: {
-        type: 'object',
-        properties: { query: { type: 'string', description: "Nom, pseudo ou mention (ex: '@Jean' ou 'Jean') de la personne recherchée." } },
-        required: ['query'],
-      },
+    name: 'get_member_info',
+    description: "Renvoie les infos d'un membre du serveur Discord (pseudo, rôles, date d'arrivée sur le serveur, date de création du compte). Cherche par pseudo, surnom, ou mention.",
+    parameters: {
+      type: 'object',
+      properties: { query: { type: 'string', description: "Nom, pseudo ou mention (ex: '@Jean' ou 'Jean') de la personne recherchée." } },
+      required: ['query'],
     },
   },
 ];
@@ -126,15 +126,134 @@ async function runFunctionCall(name, args, guild) {
 }
 
 // ------------------------------------------------------------------
+// FOURNISSEUR 1 : GROQ (format OpenAI)
+// ------------------------------------------------------------------
+
+async function callGroqOnce(apiKey, messages) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), CALL_TIMEOUT_MS);
+  try {
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: GROQ_MODEL,
+        messages,
+        tools: TOOL_SPECS.map((t) => ({ type: 'function', function: t })),
+        max_tokens: 500,
+      }),
+      signal: controller.signal,
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const err = new Error(data?.error?.message || `Erreur API (${res.status})`);
+      err.apiStatus = data?.error?.code || data?.error?.type || res.status;
+      throw err;
+    }
+    return data;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function tryGroq({ system, historyMsgs, guild }) {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) throw new Error('GROQ_API_KEY non configurée');
+
+  let messages = [{ role: 'system', content: system }, ...historyMsgs];
+  let data = await callGroqOnce(apiKey, messages);
+
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+    const msg = data.choices?.[0]?.message;
+    const calls = msg?.tool_calls || [];
+    if (!calls.length) break;
+    messages = [...messages, msg];
+    for (const c of calls) {
+      let args = {};
+      try { args = JSON.parse(c.function.arguments || '{}'); } catch { /* args invalides */ }
+      const result = await runFunctionCall(c.function.name, args, guild);
+      messages.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify(result) });
+    }
+    data = await callGroqOnce(apiKey, messages);
+  }
+
+  return (data.choices?.[0]?.message?.content || '').trim();
+}
+
+// ------------------------------------------------------------------
+// FOURNISSEUR 2 : GEMINI (format Google)
+// ------------------------------------------------------------------
+
+async function callGeminiOnce(apiKey, system, contents) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), CALL_TIMEOUT_MS);
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          contents,
+          systemInstruction: { parts: [{ text: system }] },
+          tools: [{ functionDeclarations: TOOL_SPECS }],
+          generationConfig: { maxOutputTokens: 500 },
+        }),
+        signal: controller.signal,
+      }
+    );
+    const data = await res.json();
+    if (!res.ok) {
+      const err = new Error(data?.error?.message || `Erreur API (${res.status})`);
+      err.apiStatus = data?.error?.status || res.status;
+      throw err;
+    }
+    return data;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function tryGemini({ system, historyMsgs, guild }) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error('GEMINI_API_KEY non configurée');
+
+  // Gemini utilise les rôles "user" et "model" (pas "assistant").
+  let contents = historyMsgs.map((m) => ({
+    role: m.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: m.content }],
+  }));
+  let data = await callGeminiOnce(apiKey, system, contents);
+
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+    const parts = data.candidates?.[0]?.content?.parts || [];
+    const calls = parts.filter((p) => p.functionCall);
+    if (!calls.length) break;
+    contents = [...contents, { role: 'model', parts }];
+    const responseParts = [];
+    for (const c of calls) {
+      const result = await runFunctionCall(c.functionCall.name, c.functionCall.args || {}, guild);
+      responseParts.push({ functionResponse: { name: c.functionCall.name, response: result } });
+    }
+    contents = [...contents, { role: 'function', parts: responseParts }];
+    data = await callGeminiOnce(apiKey, system, contents);
+  }
+
+  return (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('\n').trim();
+}
+
+// ------------------------------------------------------------------
 
 // Le nom "askClaude" est gardé tel quel pour ne pas avoir à toucher index.js
-// ailleurs (seul ce fichier change), même si ça parle maintenant à Groq.
+// ailleurs (seul ce fichier change), même si ça parle à Groq/Gemini.
 async function askClaude({ channelId, userId, userName, userText, persona, serverContext, speakerInfo, guild }) {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) return { error: "La clé GROQ_API_KEY n'est pas configurée sur le bot." };
+  if (!process.env.GROQ_API_KEY && !process.env.GEMINI_API_KEY) {
+    return { error: "Aucune clé IA configurée (GROQ_API_KEY ou GEMINI_API_KEY manquantes)." };
+  }
 
   const key = historyKey(channelId, userId);
   pushHistory(key, 'user', userText);
+  const historyMsgs = (histories.get(key) || []).map((m) => ({ role: m.role, content: m.content }));
 
   const system = [
     persona ? `${BASE_SYSTEM_PROMPT}\n\nPersonnalité demandée par le staff : ${persona}` : BASE_SYSTEM_PROMPT,
@@ -144,63 +263,39 @@ async function askClaude({ channelId, userId, userName, userText, persona, serve
       : '',
   ].filter(Boolean).join('\n');
 
-  // Groq/OpenAI utilisent directement les rôles "user" et "assistant".
-  const baseMessages = [
-    { role: 'system', content: system },
-    ...(histories.get(key) || []).map((m) => ({ role: m.role, content: m.content })),
-  ];
+  const errors = [];
 
-  async function callGroq(messages) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 40000);
+  if (process.env.GROQ_API_KEY) {
     try {
-      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({ model: MODEL, messages, tools: TOOLS, max_tokens: 500 }),
-        signal: controller.signal,
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        const err = new Error(data?.error?.message || `Erreur API (${res.status})`);
-        err.apiStatus = data?.error?.code || data?.error?.type || res.status;
-        throw err;
+      const text = await tryGroq({ system, historyMsgs, guild });
+      if (text) {
+        pushHistory(key, 'assistant', text);
+        return { text: text.length > MAX_REPLY_CHARS ? `${text.slice(0, MAX_REPLY_CHARS)}…` : text };
       }
-      return data;
-    } finally {
-      clearTimeout(timeout);
+      errors.push('Groq : réponse vide');
+    } catch (e) {
+      const msg = e.name === 'AbortError' ? 'délai dépassé' : (e.apiStatus ? `${e.apiStatus} : ${e.message}` : e.message);
+      console.error('Groq indisponible, bascule sur Gemini :', msg);
+      errors.push(`Groq (${msg})`);
     }
   }
 
-  try {
-    let messages = baseMessages;
-    let data = await callGroq(messages);
-
-    // Boucle d'appels d'outils : tant que le modèle demande une fonction, on
-    // l'exécute et on lui renvoie le résultat, jusqu'à une vraie réponse texte.
-    for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
-      const msg = data.choices?.[0]?.message;
-      const calls = msg?.tool_calls || [];
-      if (!calls.length) break;
-
-      messages = [...messages, msg];
-      for (const c of calls) {
-        let args = {};
-        try { args = JSON.parse(c.function.arguments || '{}'); } catch { /* args invalides, on garde {} */ }
-        const result = await runFunctionCall(c.function.name, args, guild);
-        messages.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify(result) });
+  if (process.env.GEMINI_API_KEY) {
+    try {
+      const text = await tryGemini({ system, historyMsgs, guild });
+      if (text) {
+        pushHistory(key, 'assistant', text);
+        return { text: text.length > MAX_REPLY_CHARS ? `${text.slice(0, MAX_REPLY_CHARS)}…` : text };
       }
-      data = await callGroq(messages);
+      errors.push('Gemini : réponse vide');
+    } catch (e) {
+      const msg = e.name === 'AbortError' ? 'délai dépassé' : (e.apiStatus ? `${e.apiStatus} : ${e.message}` : e.message);
+      console.error('Gemini indisponible :', msg);
+      errors.push(`Gemini (${msg})`);
     }
-
-    const text = (data.choices?.[0]?.message?.content || '').trim() || '(réponse vide)';
-    pushHistory(key, 'assistant', text);
-    return { text: text.length > MAX_REPLY_CHARS ? `${text.slice(0, MAX_REPLY_CHARS)}…` : text };
-  } catch (e) {
-    const msg = e.name === 'AbortError' ? 'Groq a mis trop de temps à répondre (40s), abandon.' : (e.apiStatus ? `${e.apiStatus} : ${e.message}` : e.message);
-    console.error('Appel API Groq impossible :', msg);
-    return { error: `Impossible de contacter Groq (${msg}).` };
   }
+
+  return { error: `Les deux IA sont indisponibles pour le moment : ${errors.join(' | ')}` };
 }
 
 module.exports = { askClaude, resetHistory };

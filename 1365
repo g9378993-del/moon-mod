@@ -1,0 +1,26 @@
+# Token de TON bot (Developer Portal > Bot > Reset Token). Ne le partage JAMAIS.
+DISCORD_TOKEN=colle_ton_token_ici
+# Application ID (Developer Portal > General Information > Application ID)
+CLIENT_ID=colle_id_application_ici
+# Ton ID Discord (clic droit sur ton profil > Copier l'identifiant, mode développeur activé)
+OWNER_ID=ton_id_discord
+
+# MongoDB (stockage persistant : configs, warns, cases). Sans ça, tout est
+# perdu à chaque redémarrage de Render.
+MONGODB_URI=
+
+# --- Chat IA : deux fournisseurs gratuits, bascule automatique si l'un est ---
+# --- indisponible (limite atteinte, panne...). Remplis les deux si possible.---
+# Groq (essayé en premier) : https://console.groq.com/keys
+GROQ_API_KEY=
+GROQ_MODEL=openai/gpt-oss-20b
+# Gemini (utilisé si Groq échoue) : https://aistudio.google.com/apikey
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-3.5-flash-lite
+
+# Clé API YouTube GRATUITE (optionnelle, pour que l'IA cherche des vidéos/musiques).
+YOUTUBE_API_KEY=
+
+# URL publique Render (https://ton-app.onrender.com), pour l'anti-veille.
+PUBLIC_URL=
+PORT=3000
