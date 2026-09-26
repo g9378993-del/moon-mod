@@ -1,5 +1,9 @@
 require('dotenv').config();
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { spawn } = require('child_process');
 const db = require('./db');
 const mod = require('./moderation');
 const automod = require('./automod');
@@ -52,6 +56,76 @@ function needsServerContext(text) {
   return /\b(salon|canal|channel|rôle|role|permission)s?\b/i.test(text);
 }
 
+// Télécharge automatiquement le binaire luau (Linux) au démarrage s'il est
+// absent, pour que /deobf marche sans configuration manuelle sur Render.
+// Ne bloque jamais le démarrage du bot : en cas d'échec, /deobf le signalera
+// juste proprement au lieu de planter quoi que ce soit.
+async function ensureLuauBinary() {
+  const binDir = path.join(DEOBF_DIR, 'bin');
+  const luauPath = path.join(binDir, 'luau');
+  if (!fs.existsSync(DEOBF_ENTRY) || fs.existsSync(luauPath)) return;
+  try {
+    console.log('[deobf] Binaire luau absent, téléchargement automatique...');
+    fs.mkdirSync(binDir, { recursive: true });
+    const rel = await fetch('https://api.github.com/repos/luau-lang/luau/releases/latest', { headers: { 'user-agent': 'panel-bot' } }).then((r) => r.json());
+    const asset = (rel.assets || []).find((a) => /ubuntu/i.test(a.name) && a.name.endsWith('.zip'));
+    if (!asset) { console.error('[deobf] Aucun binaire Linux (ubuntu) trouvé dans la dernière release luau-lang/luau.'); return; }
+    const zipPath = path.join(binDir, 'luau.zip');
+    const buf = await fetch(asset.browser_download_url).then((r) => r.arrayBuffer());
+    fs.writeFileSync(zipPath, Buffer.from(buf));
+    await new Promise((resolve) => {
+      const p = spawn('unzip', ['-o', zipPath, '-d', binDir]);
+      p.on('close', resolve);
+      p.on('error', resolve);
+    });
+    fs.rm(zipPath, { force: true }, () => {});
+    for (const f of ['luau', 'luau-ast']) {
+      const fp = path.join(binDir, f);
+      if (fs.existsSync(fp)) fs.chmodSync(fp, 0o755);
+    }
+    console.log(fs.existsSync(luauPath) ? '[deobf] Binaire luau installé ✅' : "[deobf] Échec : luau absent après extraction (`unzip` installé sur le serveur ?).");
+  } catch (e) {
+    console.error('[deobf] Installation automatique du binaire luau impossible :', e.message);
+  }
+}
+
+// ----------------------------------------------------------------
+// DÉOBFUSCATEUR LUA/LUAU (indépendant de l'IA — lance deobf/deob.py en
+// sous-processus Python). Dossier attendu : ./deobf/deob.py à la racine du
+// projet (copié depuis le zip fourni). Nécessite python3 sur le serveur et
+// un binaire luau (Linux) dans deobf/bin/luau — voir deobf/CLAUDE.md.
+// ----------------------------------------------------------------
+const DEOBF_DIR = path.join(__dirname, 'deobf');
+const DEOBF_ENTRY = path.join(DEOBF_DIR, 'deob.py');
+const DEOBF_TIMEOUT_SEC = 60;
+
+function runDeobfuscator(inputPath, extraArgs = []) {
+  return new Promise((resolve) => {
+    if (!fs.existsSync(DEOBF_ENTRY)) {
+      resolve({ ok: false, error: "Le dossier `deobf/` n'est pas présent à la racine du projet (voir deobf/CLAUDE.md pour l'installer)." });
+      return;
+    }
+    const outPath = `${inputPath}.out.lua`;
+    const args = [DEOBF_ENTRY, inputPath, '-o', outPath, '--timeout', String(DEOBF_TIMEOUT_SEC), ...extraArgs];
+    let proc;
+    try {
+      proc = spawn('python3', args, { cwd: DEOBF_DIR });
+    } catch (e) {
+      resolve({ ok: false, error: `Impossible de lancer python3 : ${e.message}` });
+      return;
+    }
+    const killer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch (e) { /* déjà terminé */ } }, (DEOBF_TIMEOUT_SEC + 20) * 1000);
+    let stderr = '';
+    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+    proc.on('error', (e) => { clearTimeout(killer); resolve({ ok: false, error: `python3 introuvable ou erreur de lancement : ${e.message}` }); });
+    proc.on('close', (code) => {
+      clearTimeout(killer);
+      if (code === 0 && fs.existsSync(outPath)) { resolve({ ok: true, outPath }); return; }
+      const tail = stderr.trim().split('\n').filter(Boolean).slice(-8).join('\n');
+      resolve({ ok: false, error: tail || `Échec (code de sortie ${code}).` });
+    });
+  });
+}
 const INSTANCE_ID = crypto.randomBytes(2).toString('hex');
 const STARTED_AT = Date.now();
 const dup = { count: 0, lastAt: null };
@@ -179,6 +253,10 @@ const commands = [
 
   new SlashCommandBuilder().setName('ask').setDescription("Poser une question à l'IA (répond dans ta langue)")
     .addStringOption((o) => o.setName('question').setDescription('Ta question').setRequired(true)),
+
+  new SlashCommandBuilder().setName('deobf').setDescription('Déobfusquer un script Lua/Luau protégé (indépendant de l\'IA)')
+    .addAttachmentOption((o) => o.setName('fichier').setDescription('Le script .lua/.luau/.txt à déobfusquer').setRequired(true))
+    .addBooleanOption((o) => o.setName('rapide').setDescription('Trace seulement, sans dévirtualisation (plus rapide, moins complet)')),
 
   new SlashCommandBuilder().setName('help').setDescription('Voir toutes les commandes'),
 ].map((c) => c.setDMPermission(false).toJSON());
@@ -521,6 +599,7 @@ async function handleModCommand(interaction, guild, g) {
       { name: 'Modération', value: '`/kick` `/ban` `/unban` `/timeout` `/untimeout` `/warn` `/warnings` `/unwarn` `/clear` `/slowmode` `/lock` `/unlock` `/lockdown` `/unlockdown`' },
       { name: 'Historique', value: '`/case` `/modlogs`' },
       { name: 'Configuration', value: '`/setmodlog` `/staffrole` `/warnactions` `/automod`' },
+      { name: 'Déobfuscation', value: '`/deobf` (envoyer un script .lua/.luau, staff uniquement)' },
       { name: 'IA (Claude)', value: '`/ai` (config) · `/ask` (poser une question) · mentionne le bot ou écris dans un salon IA pour discuter, dans n\'importe quelle langue' },
     );
     await interaction.editReply({ embeds: [embed] });
@@ -554,6 +633,35 @@ async function routeInteraction(interaction) {
 
   const guild = interaction.guild;
   const g = db.get(guild.id);
+
+  if (interaction.commandName === 'deobf') {
+    if (!mod.hasModPerms(interaction.member, g)) {
+      await interaction.reply({ content: "❌ Tu n'as pas la permission d'utiliser `/deobf` (Administrateur, Gérer le serveur, ou un rôle autorisé via `/staffrole`).", ephemeral: true });
+      return;
+    }
+    await interaction.deferReply();
+    const file = interaction.options.getAttachment('fichier');
+    if (file.size > 2_000_000) { await interaction.editReply('❌ Fichier trop volumineux (2 Mo max).'); return; }
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'deobf_'));
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const inputPath = path.join(tmpDir, safeName);
+    try {
+      const buf = await fetch(file.url).then((r) => r.arrayBuffer());
+      fs.writeFileSync(inputPath, Buffer.from(buf));
+      const fast = interaction.options.getBoolean('rapide');
+      const result = await runDeobfuscator(inputPath, fast ? ['--no-devirt'] : []);
+      if (!result.ok) {
+        await interaction.editReply(`❌ Échec de la déobfuscation :\n\`\`\`\n${result.error.slice(0, 1800)}\n\`\`\``);
+        return;
+      }
+      await interaction.editReply({ content: '✅ Script déobfusqué :', files: [{ attachment: result.outPath, name: `deobf-${safeName.replace(/\.[^.]+$/, '')}.lua` }] });
+    } catch (e) {
+      await interaction.editReply(`❌ Erreur : ${e.message}`);
+    } finally {
+      fs.rm(tmpDir, { recursive: true, force: true }, () => {});
+    }
+    return;
+  }
 
   if (interaction.commandName === 'ask') {
     await interaction.deferReply();
@@ -621,6 +729,7 @@ client.on(Events.GuildMemberAdd, async (member) => {
 // surveille son port pour savoir si l'app est vivante, et le tuerait pendant
 // des tentatives MongoDB lentes/échouées sinon (redémarrages en boucle).
 require('./server');
+ensureLuauBinary();
 if (!process.env.DISCORD_TOKEN) console.error("❌ DISCORD_TOKEN manquant : ajoute-le dans les variables d'environnement.");
 client.login(process.env.DISCORD_TOKEN).catch((e) => console.error('❌ Connexion Discord impossible :', e.message));
 
