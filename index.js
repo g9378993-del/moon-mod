@@ -7,7 +7,6 @@ const ai = require('./ai');
 const {
   Client, GatewayIntentBits, Partials, Events, PermissionFlagsBits, ChannelType,
   EmbedBuilder, REST, Routes, SlashCommandBuilder,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder,
 } = require('discord.js');
 
 process.on('unhandledRejection', (err) => console.error('Promesse rejetée non gérée :', err));
@@ -18,134 +17,38 @@ process.on('uncaughtException', (err) => console.error('Exception non gérée :'
 // ----------------------------------------------------------------
 // Reconstruit à chaque appel (pas de cache) : les salons/rôles peuvent
 // changer entre deux messages, et c'est rapide (cache local de discord.js).
-function buildServerContext(guild, member, otherMembers = []) {
-  // Liste COMPLÈTE (pas de troncature) : salons visibles par la personne qui
-  // parle au bot, avec leur ID. Si `member` est fourni, on filtre selon ses
-  // permissions réelles (ViewChannel) pour que l'IA ne propose jamais un
-  // salon privé/staff à quelqu'un qui n'y a pas accès.
+function buildServerContext(guild) {
   const channels = guild.channels.cache
     .filter((c) => c.type === ChannelType.GuildText || c.type === ChannelType.GuildAnnouncement)
-    .filter((c) => !member || c.permissionsFor(member)?.has(PermissionFlagsBits.ViewChannel))
     .sort((a, b) => a.rawPosition - b.rawPosition)
-    .map((c) => `#${c.name} — id:${c.id} (<#${c.id}>)${c.topic ? ` — ${c.topic.slice(0, 80)}` : ''}`);
+    .map((c) => `#${c.name} (<#${c.id}>)${c.topic ? ` — ${c.topic.slice(0, 80)}` : ''}`);
 
-  // Liste COMPLÈTE de tous les rôles du serveur, avec leur ID.
   const roles = guild.roles.cache
     .filter((r) => r.id !== guild.id && !r.managed) // pas @everyone, pas les rôles de bots
     .sort((a, b) => b.position - a.position)
-    .map((r) => `@${r.name} — id:${r.id} (<@&${r.id}>)`);
-
-  const rolesOf = (m) => guild.roles.cache
-    .filter((r) => r.id !== guild.id && m.roles.cache.has(r.id))
-    .sort((a, b) => b.position - a.position)
-    .map((r) => `@${r.name} (id:${r.id})`);
-
-  // Rôle(s) de la personne qui parle actuellement au bot, du plus haut au plus bas.
-  const memberRoles = member ? rolesOf(member) : [];
-
-  // Rôle(s) de toute personne @mentionnée dans le message (pour répondre à
-  // "quel rôle a untel ?" même si ce n'est pas la personne qui parle).
-  const mentionedLines = otherMembers
-    .filter((m) => !member || m.id !== member.id)
-    .map((m) => `${m.user.tag} : ${rolesOf(m).join(', ') || 'aucun rôle particulier'}`);
+    .map((r) => `@${r.name} (<@&${r.id}>)`);
 
   return [
-    member
-      ? `Rôle(s) de LA PERSONNE QUI TE PARLE actuellement : ${memberRoles.join(', ') || 'aucun rôle particulier (membre de base)'}. Son rôle le plus élevé : ${memberRoles[0] || 'aucun'}.`
-      : '',
-    mentionedLines.length
-      ? `Rôle(s) d'autres personnes reconnues dans ce message (par @mention ou par pseudo cité) :\n${mentionedLines.join('\n')}`
-      : '',
-    `Salons textuels que CETTE personne peut voir (liste complète) :\n${channels.join('\n') || 'aucun'}`,
-    `Tous les rôles du serveur (liste complète) :\n${roles.join('\n') || 'aucun'}`,
-  ].filter(Boolean).join('\n\n');
+    `Salons textuels (liste complète) :\n${channels.join('\n') || 'aucun'}`,
+    `Rôles (liste complète) :\n${roles.join('\n') || 'aucun'}`,
+  ].join('\n\n');
 }
 
-// Petits mots vides à ignorer quand on cherche un nom de personne dans une
-// phrase (sinon "le", "salon", "rôle"... seraient tentés comme des pseudos).
-const NAME_STOPWORDS = new Set(['les','des','une','que','qui','quoi','pour','avec','dans','sur','est','sont','elle','cette','ces','son','ses','mon','mes','ton','tes','notre','nos','votre','vos','leur','leurs','quel','quelle','quels','quelles','rôle','role','roles','rôles','salon','salons','discord','bot','avoir','fait','faire','être','etre','alors','donc','comme','bien','très','tres','ici','nous','vous','ils','elles']);
-
-// Cherche, dans un texte libre, un membre cité par son pseudo/pseudonyme SANS
-// @mention (ex: "c'est quoi le rôle de Kevin ?"). Recherche par mots du
-// message via l'API de recherche de membres Discord, en ne gardant que les
-// correspondances EXACTES (pas de préfixe) pour éviter les faux positifs.
-async function resolveMembersByName(guild, text, excludeIds = []) {
-  const tokens = [...new Set((text.match(/[\p{L}][\p{L}'-]{1,}/gu) || [])
-    .map((t) => t.toLowerCase())
-    .filter((t) => t.length >= 3 && !NAME_STOPWORDS.has(t)))].slice(0, 6);
-  if (!tokens.length) return [];
-
-  const results = await Promise.all(tokens.map((t) => guild.members.search({ query: t, limit: 3 }).catch(() => null)));
-  const found = new Map();
-  results.forEach((col, i) => {
-    if (!col) return;
-    const token = tokens[i];
-    for (const m of col.values()) {
-      if (excludeIds.includes(m.id) || found.has(m.id)) continue;
-      const candidates = [m.user.username, m.user.globalName, m.nickname].filter(Boolean).map((s) => s.toLowerCase());
-      if (candidates.includes(token)) found.set(m.id, m);
-    }
-  });
-  return [...found.values()];
+// Qui parle au bot, et avec quel(s) rôle(s) exactement (nom + ID) — pour que
+// l'IA sache reconnaître qui elle a en face d'elle.
+function buildSpeakerInfo(member) {
+  if (!member) return null;
+  const roles = member.roles.cache
+    .filter((r) => r.id !== member.guild.id)
+    .sort((a, b) => b.position - a.position)
+    .map((r) => `@${r.name} (<@&${r.id}>)`);
+  return `La personne qui te parle s'appelle ${member.displayName} (<@${member.id}>) et a le(s) rôle(s) suivant(s) : ${roles.length ? roles.join(', ') : 'aucun rôle particulier'}.`;
 }
 
 const INSTANCE_ID = crypto.randomBytes(2).toString('hex');
 const STARTED_AT = Date.now();
 const dup = { count: 0, lastAt: null };
 const isBotOwner = (userId) => !!process.env.OWNER_ID && userId === process.env.OWNER_ID;
-
-// ----------------------------------------------------------------
-// LOGS DEMANDÉS EN PARLANT AU BOT ("montre les logs", "logs du rôle X"...)
-// ----------------------------------------------------------------
-const LOGS_REGEX = /\blogs?\b/i;
-const CASE_TITLES = {
-  kick: 'Kick', ban: 'Ban', unban: 'Unban', warn: 'Avertissement', timeout: 'Timeout', untimeout: 'Fin de timeout',
-  'automod-delete': 'Automod (suppression)', 'automod-timeout': 'Automod (timeout)', raid: 'Anti-raid',
-};
-
-// Cherche un rôle cité dans le texte (par @mention ou par son nom exact),
-// pour filtrer les logs sur ce rôle. Les noms les plus longs sont testés en
-// premier pour éviter qu'un rôle court (ex: "VIP") ne matche à tort à
-// l'intérieur d'un nom plus long.
-function findRoleInText(guild, text) {
-  const mention = text.match(/<@&(\d+)>/);
-  if (mention) { const r = guild.roles.cache.get(mention[1]); if (r) return r; }
-  const roles = [...guild.roles.cache.values()]
-    .filter((r) => r.id !== guild.id && !r.managed && r.name.length >= 2)
-    .sort((a, b) => b.name.length - a.name.length);
-  for (const r of roles) {
-    const re = new RegExp(`\\b${r.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-    if (re.test(text)) return r;
-  }
-  return null;
-}
-
-// Gère les demandes de logs faites EN PARLANT au bot ("montre-moi les logs",
-// "les logs du rôle Staff"...). Renvoie null si ce n'est pas une demande de
-// logs (le message continue normalement vers l'IA). Sinon renvoie le texte à
-// répondre DIRECTEMENT, sans passer par Gemini — l'accès est TOUJOURS
-// vérifié via hasModPerms (même check que les commandes de modération), donc
-// ça ne marche jamais pour n'importe qui, seulement pour le staff.
-async function handleLogsIntent({ guild, member, g, text }) {
-  if (!LOGS_REGEX.test(text)) return null;
-  if (!mod.hasModPerms(member, g)) return '❌ Seul le staff peut consulter les logs de modération.';
-
-  const role = findRoleInText(guild, text);
-  let cases = g.cases || [];
-
-  if (role) {
-    let roleMembers = role.members; // cache
-    try { await guild.members.fetch(); roleMembers = role.members; } catch (e) { /* on garde le cache si le fetch échoue */ }
-    const ids = new Set(roleMembers.map((m) => m.id));
-    cases = cases.filter((c) => ids.has(c.userId));
-    if (!cases.length) return `📋 Aucun log trouvé pour des membres ayant le rôle <@&${role.id}>.`;
-  }
-
-  const recent = [...cases].sort((a, b) => b.createdAt - a.createdAt).slice(0, 15);
-  const lines = recent.map((c) => `#${c.id} • **${CASE_TITLES[c.type] || c.type}** • <@${c.userId}> • <t:${Math.floor(c.createdAt / 1000)}:R>${c.reason ? ` — ${c.reason}` : ''}`);
-  const header = role ? `📋 Derniers logs pour le rôle <@&${role.id}> (${cases.length} au total) :` : `📋 Derniers logs (${cases.length} au total) :`;
-  return `${header}\n${lines.join('\n')}`;
-}
 
 // Lancée tout de suite (voir le bas du fichier). Le bot attend cette promesse
 // avant de toucher aux données, mais ça ne bloque plus le démarrage du
@@ -252,8 +155,6 @@ const commands = [
     .addSubcommand((s) => s.setName('motsinterdits').setDescription('Filtrer des mots')
       .addStringOption((o) => o.setName('action').setDescription('Action').setRequired(true).addChoices({ name: 'ajouter', value: 'add' }, { name: 'retirer', value: 'remove' }, { name: 'liste', value: 'list' }, { name: 'on', value: 'on' }, { name: 'off', value: 'off' }))
       .addStringOption((o) => o.setName('mot').setDescription('Le mot (pour ajouter/retirer)')))
-    .addSubcommand((s) => s.setName('grosmots').setDescription('Filtre intégré multilingue (FR/EN/ES/DE/IT/PT) qui supprime les gros mots')
-      .addStringOption((o) => o.setName('etat').setDescription('on/off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' })))
     .addSubcommand((s) => s.setName('antiraid').setDescription('Anti-raid (afflux anormal de nouveaux membres)')
       .addStringOption((o) => o.setName('etat').setDescription('on/off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' }))
       .addIntegerOption((o) => o.setName('seuil').setDescription("Nb d'arrivées déclenchant l'alerte"))
@@ -272,43 +173,7 @@ const commands = [
   new SlashCommandBuilder().setName('ask').setDescription("Poser une question à l'IA (répond dans ta langue)")
     .addStringOption((o) => o.setName('question').setDescription('Ta question').setRequired(true)),
 
-  new SlashCommandBuilder().setName('language').setDescription("Définir la langue principale utilisée par l'IA sur ce serveur")
-    .addSubcommand((s) => s.setName('set').setDescription('Changer la langue principale')
-      .addStringOption((o) => o.setName('langue').setDescription('Ex: français, english, español, العربية...').setRequired(true)))
-    .addSubcommand((s) => s.setName('show').setDescription('Voir la langue principale actuelle')),
-
-  new SlashCommandBuilder().setName('permscmnds').setDescription('Autoriser/retirer un rôle sur une commande précise (en plus du staff)')
-    .addSubcommand((s) => s.setName('allow').setDescription('Autoriser un rôle à utiliser une commande')
-      .addStringOption((o) => o.setName('commande').setDescription('Nom de la commande, ex: kick').setRequired(true))
-      .addRoleOption((o) => o.setName('role').setDescription('Le rôle').setRequired(true)))
-    .addSubcommand((s) => s.setName('deny').setDescription('Retirer cette autorisation')
-      .addStringOption((o) => o.setName('commande').setDescription('Nom de la commande').setRequired(true))
-      .addRoleOption((o) => o.setName('role').setDescription('Le rôle').setRequired(true)))
-    .addSubcommand((s) => s.setName('list').setDescription('Voir les autorisations par commande')),
-
-  new SlashCommandBuilder().setName('findsalon').setDescription('Chercher un salon par mot-clé (nom ou description)')
-    .addStringOption((o) => o.setName('mot').setDescription('Mot-clé à chercher').setRequired(true)),
-
-  new SlashCommandBuilder().setName('ticket').setDescription('Système de tickets de support')
-    .addSubcommand((s) => s.setName('setup').setDescription('Configurer le système de tickets')
-      .addChannelOption((o) => o.setName('categorie').setDescription('Catégorie où créer les salons de tickets').setRequired(true).addChannelTypes(ChannelType.GuildCategory))
-      .addRoleOption((o) => o.setName('role_support').setDescription('Rôle ajouté automatiquement à chaque ticket').setRequired(true))
-      .addStringOption((o) => o.setName('message').setDescription("Message d'accueil personnalisé dans chaque ticket")))
-    .addSubcommand((s) => s.setName('panel').setDescription('Poster le panneau "Ouvrir un ticket" dans ce salon'))
-    .addSubcommand((s) => s.setName('close').setDescription('Fermer le ticket en cours (à utiliser DANS le salon du ticket)'))
-    .addSubcommand((s) => s.setName('add').setDescription('Ajouter quelqu\'un au ticket en cours').addUserOption((o) => o.setName('membre').setDescription('Le membre').setRequired(true)))
-    .addSubcommand((s) => s.setName('remove').setDescription('Retirer quelqu\'un du ticket en cours').addUserOption((o) => o.setName('membre').setDescription('Le membre').setRequired(true))),
-
-  new SlashCommandBuilder().setName('findsource').setDescription('Chercher les sources (liens/pièces jointes) postées dans un ou plusieurs salons')
-    .addChannelOption((o) => o.setName('salon').setDescription('Salon à fouiller').setRequired(true).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
-    .addChannelOption((o) => o.setName('salon2').setDescription('2e salon (optionnel)').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
-    .addChannelOption((o) => o.setName('salon3').setDescription('3e salon (optionnel)').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
-    .addStringOption((o) => o.setName('mot').setDescription('Mot-clé à chercher dans le message (optionnel)'))
-    .addUserOption((o) => o.setName('membre').setDescription('Ne garder que les sources de cette personne'))
-    .addIntegerOption((o) => o.setName('limite').setDescription('Nb de messages récents à fouiller par salon (défaut 100, max 500)').setMinValue(10).setMaxValue(500)),
-
-  new SlashCommandBuilder().setName('help').setDescription('Voir toutes les commandes')
-    .addStringOption((o) => o.setName('langue').setDescription('Forcer une langue précise pour cette réponse (sinon : ta langue connue)')),
+  new SlashCommandBuilder().setName('help').setDescription('Voir toutes les commandes'),
 ].map((c) => c.setDMPermission(false).toJSON());
 
 const ownerCommands = [
@@ -339,38 +204,6 @@ client.once(Events.ClientReady, async () => {
     } catch (e) { /* MP fermés, tant pis */ }
   }
 });
-
-// ----------------------------------------------------------------
-// SYSTÈME DE TICKETS — fermeture (transcript envoyé aux logs + suppression
-// du salon après un court délai, pour laisser le temps de lire le message).
-// ----------------------------------------------------------------
-async function closeTicket(guild, channel, g, closedBy) {
-  const entry = g.tickets.open[channel.id];
-  try {
-    const messages = await channel.messages.fetch({ limit: 100 }).catch(() => null);
-    if (messages) {
-      const lines = [...messages.values()].reverse().map((m) => `[${new Date(m.createdTimestamp).toISOString()}] ${m.author.tag}: ${m.content || '(sans texte)'}${m.attachments.size ? ` [${m.attachments.size} pièce(s) jointe(s)]` : ''}`);
-      if (g.modLogChannelId) {
-        const embed = new EmbedBuilder().setColor(mod.COLORS.ticketClose).setTitle(`🔒 Ticket fermé — #${entry?.number ?? '?'}`)
-          .addFields(
-            { name: 'Ouvert par', value: entry ? `<@${entry.userId}>` : 'inconnu', inline: true },
-            { name: 'Fermé par', value: `<@${closedBy.id}>`, inline: true },
-            { name: 'Pris en charge par', value: entry?.claimedBy ? `<@${entry.claimedBy}>` : 'personne', inline: true },
-          ).setTimestamp();
-        await mod.postToModLog(guild.client, g, embed);
-        try {
-          const logChannel = await guild.client.channels.fetch(g.modLogChannelId);
-          const attachment = new AttachmentBuilder(Buffer.from(lines.join('\n') || '(vide)', 'utf8'), { name: `transcript-${channel.name}.txt` });
-          await logChannel.send({ files: [attachment] });
-        } catch (e) { /* pas de perms d'envoi de fichier, tant pis pour le transcript */ }
-      }
-    }
-  } catch (e) { console.error('Transcript ticket impossible :', e.message); }
-  delete g.tickets.open[channel.id];
-  await db.save(guild.id);
-  try { await channel.send('🔒 Ce ticket va être supprimé dans 5 secondes...'); } catch (e) { /* ignore */ }
-  setTimeout(() => { channel.delete('Ticket fermé').catch(() => {}); }, 5000);
-}
 
 // ----------------------------------------------------------------
 // MODÉRATION MANUELLE
@@ -656,12 +489,6 @@ async function handleModCommand(interaction, guild, g) {
       await reply(`✅ Anti-raid : ${am.antiRaid.enabled ? 'activé' : 'désactivé'} (seuil ${am.antiRaid.joinThreshold}/${am.antiRaid.windowSeconds}s, âge min ${am.antiRaid.minAccountAgeDays}j, action: ${am.antiRaid.action}).`);
       return;
     }
-    if (sub === 'grosmots') {
-      am.profanity.enabled = interaction.options.getString('etat') === 'on';
-      await db.save(guild.id);
-      await reply(`✅ Filtre de gros mots intégré (FR/EN/ES/DE/IT/PT) : ${am.profanity.enabled ? 'activé' : 'désactivé'}.`);
-      return;
-    }
   }
 
   if (cmd === 'ai') {
@@ -682,195 +509,13 @@ async function handleModCommand(interaction, guild, g) {
     if (sub === 'reset') { ai.resetHistory(interaction.channelId, interaction.user.id); await reply('🧹 Conversation oubliée.'); return; }
   }
 
-  if (cmd === 'language') {
-    const sub = interaction.options.getSubcommand();
-    if (sub === 'show') { await reply(g.aiLanguage ? `🌐 Langue principale actuelle : **${g.aiLanguage}**.` : "🌐 Aucune langue principale définie : le bot répond dans la langue de chaque personne."); return; }
-    if (sub === 'set') {
-      g.aiLanguage = interaction.options.getString('langue');
-      await db.save(guild.id);
-      await reply(`✅ Langue principale du bot sur ce serveur : **${g.aiLanguage}**. Il l'utilisera avec tout le monde, sauf avec ceux qui lui parlent (ou lui ont déjà parlé) dans une autre langue : dans ce cas il retient leur langue et continue à leur répondre pareil à chaque fois.`);
-      return;
-    }
-  }
-
-  if (cmd === 'ticket') {
-    const sub = interaction.options.getSubcommand();
-    const t = g.tickets;
-
-    if (sub === 'setup') {
-      if (!mod.hasModPerms(interaction.member, g)) { await reply('❌ Réservé au staff.'); return; }
-      const categorie = interaction.options.getChannel('categorie');
-      const role = interaction.options.getRole('role_support');
-      const message = interaction.options.getString('message');
-      t.enabled = true;
-      t.categoryId = categorie.id;
-      t.supportRoleId = role.id;
-      if (message) t.welcomeMessage = message;
-      await db.save(guild.id);
-      await reply(`✅ Système de tickets configuré : catégorie **${categorie.name}**, rôle support <@&${role.id}>. Poste le panneau avec \`/ticket panel\` dans le salon de ton choix.`);
-      return;
-    }
-
-    if (sub === 'panel') {
-      if (!mod.hasModPerms(interaction.member, g)) { await reply('❌ Réservé au staff.'); return; }
-      if (!t.enabled || !t.categoryId) { await reply('❌ Configure d\'abord le système avec `/ticket setup`.'); return; }
-      const embed = new EmbedBuilder().setColor(mod.COLORS.ticket).setTitle('🎫 Support — Ouvrir un ticket')
-        .setDescription(t.welcomeMessage || "Besoin d'aide ? Clique sur le bouton ci-dessous pour ouvrir un salon privé avec l'équipe.")
-        .setThumbnail(guild.iconURL() || null)
-        .setFooter({ text: guild.name });
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('ticket_open').setLabel('Ouvrir un ticket').setEmoji('🎫').setStyle(ButtonStyle.Success),
-      );
-      const msg = await interaction.channel.send({ embeds: [embed], components: [row] });
-      t.panelChannelId = interaction.channelId;
-      t.panelMessageId = msg.id;
-      await db.save(guild.id);
-      await reply('✅ Panneau posté dans ce salon.');
-      return;
-    }
-
-    // add/remove/close : utilisables DEPUIS le salon du ticket concerné.
-    const entry = t.open[interaction.channelId];
-    if (!entry) { await reply('❌ Cette commande s\'utilise DANS un salon de ticket.'); return; }
-
-    if (sub === 'add' || sub === 'remove') {
-      if (!mod.hasModPerms(interaction.member, g)) { await reply('❌ Réservé au staff.'); return; }
-      const membre = interaction.options.getUser('membre');
-      try {
-        if (sub === 'add') await interaction.channel.permissionOverwrites.edit(membre.id, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true });
-        else await interaction.channel.permissionOverwrites.delete(membre.id);
-      } catch (e) { await reply(`❌ Erreur (${e.message}).`); return; }
-      await reply(sub === 'add' ? `✅ ${membre} ajouté au ticket.` : `✅ ${membre} retiré du ticket.`);
-      return;
-    }
-
-    if (sub === 'close') {
-      if (entry.userId !== interaction.user.id && !mod.hasModPerms(interaction.member, g)) { await reply("❌ Seul l'auteur du ticket ou le staff peut le fermer."); return; }
-      await reply('🔒 Fermeture du ticket...');
-      await closeTicket(guild, interaction.channel, g, interaction.user);
-      return;
-    }
-  }
-
-  if (cmd === 'permscmnds') {
-    const sub = interaction.options.getSubcommand();
-    if (sub === 'list') {
-      const lines = Object.entries(g.cmdPerms || {}).filter(([, r]) => r.length).map(([c, r]) => `/${c} : ${r.map((id) => `<@&${id}>`).join(' ')}`);
-      await reply(lines.length ? `🔐 Autorisations par commande :\n${lines.join('\n')}` : 'Aucune autorisation par commande configurée.');
-      return;
-    }
-    const commande = interaction.options.getString('commande').toLowerCase().replace(/^\//, '');
-    const role = interaction.options.getRole('role');
-    if (!g.cmdPerms) g.cmdPerms = {};
-    if (!g.cmdPerms[commande]) g.cmdPerms[commande] = [];
-    if (sub === 'allow') {
-      if (!g.cmdPerms[commande].includes(role.id)) g.cmdPerms[commande].push(role.id);
-      await db.save(guild.id); await reply(`✅ <@&${role.id}> peut maintenant utiliser \`/${commande}\`.`); return;
-    }
-    if (sub === 'deny') {
-      g.cmdPerms[commande] = g.cmdPerms[commande].filter((r) => r !== role.id);
-      await db.save(guild.id); await reply(`✅ <@&${role.id}> n'a plus cette autorisation sur \`/${commande}\`.`); return;
-    }
-  }
-
-  if (cmd === 'findsalon') {
-    const raw = interaction.options.getString('mot');
-    const query = raw.toLowerCase();
-    const matches = guild.channels.cache
-      .filter((c) => c.type === ChannelType.GuildText || c.type === ChannelType.GuildAnnouncement)
-      .filter((c) => c.permissionsFor(interaction.member)?.has(PermissionFlagsBits.ViewChannel))
-      .filter((c) => c.name.toLowerCase().includes(query) || (c.topic || '').toLowerCase().includes(query))
-      .sort((a, b) => a.rawPosition - b.rawPosition);
-    if (!matches.size) { await reply(`🔍 Aucun salon trouvé pour "${raw}".`); return; }
-    const lines = [...matches.values()].slice(0, 25).map((c) => `${c} — \`#${c.name}\`${c.topic ? ` : ${c.topic.slice(0, 80)}` : ''}`);
-    await reply(`🔍 ${matches.size} salon(s) trouvé(s) pour "${raw}" :\n${lines.join('\n')}`);
-    return;
-  }
-
-  if (cmd === 'findsource') {
-    const channels = [interaction.options.getChannel('salon'), interaction.options.getChannel('salon2'), interaction.options.getChannel('salon3')].filter(Boolean);
-    const rawMot = interaction.options.getString('mot');
-    const mot = rawMot ? rawMot.toLowerCase() : null;
-    const membre = interaction.options.getUser('membre');
-    const limite = interaction.options.getInteger('limite') || 100;
-    const URL_RE = /https?:\/\/\S+/i;
-
-    let found = [];
-    for (const channel of channels) {
-      const perms = channel.permissionsFor(botMember);
-      if (!perms?.has(PermissionFlagsBits.ViewChannel) || !perms?.has(PermissionFlagsBits.ReadMessageHistory)) continue;
-      let fetched = 0, lastId;
-      // Pagine par lots de 100 (max Discord) jusqu'à la limite demandée.
-      while (fetched < limite) {
-        const batch = await channel.messages.fetch({ limit: Math.min(100, limite - fetched), ...(lastId ? { before: lastId } : {}) }).catch(() => null);
-        if (!batch || !batch.size) break;
-        fetched += batch.size;
-        lastId = batch.last().id;
-        for (const m of batch.values()) {
-          const isSource = m.attachments.size > 0 || URL_RE.test(m.content) || m.embeds.length > 0;
-          if (!isSource) continue;
-          if (membre && m.author.id !== membre.id) continue;
-          if (mot && !m.content.toLowerCase().includes(mot)) continue;
-          found.push(m);
-        }
-        if (batch.size < 100) break;
-      }
-    }
-
-    if (!found.length) { await reply(`🔍 Aucune source trouvée dans ${channels.join(' ')}${mot ? ` pour "${rawMot}"` : ''}${membre ? ` de ${membre}` : ''}.`); return; }
-
-    found.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
-    const top = found.slice(0, 15);
-    const lines = top.map((m) => {
-      const snippet = m.content ? (m.content.length > 100 ? `${m.content.slice(0, 100)}…` : m.content) : (m.attachments.size ? `📎 ${m.attachments.size} pièce(s) jointe(s)` : '🔗 lien');
-      return `[🔗](${m.url}) **${m.author.tag}** dans ${m.channel} — <t:${Math.floor(m.createdTimestamp / 1000)}:R>\n> ${snippet}`;
-    });
-    const embed = new EmbedBuilder().setColor(mod.COLORS.source).setTitle(`🔍 Sources trouvées (${found.length}${found.length > top.length ? `, 15 plus récentes affichées` : ''})`)
-      .setDescription(lines.join('\n\n').slice(0, 4000))
-      .setFooter({ text: `Fouillé : ${channels.map((c) => `#${c.name}`).join(', ')}${mot ? ` · mot: "${rawMot}"` : ''}${membre ? ` · membre: ${membre.tag}` : ''}` });
-    await interaction.editReply({ embeds: [embed] });
-    return;
-  }
-
-
   if (cmd === 'help') {
-    const HELP_TEXT = [
-      '**🛡️ Modération**',
-      '`/kick` `/ban` `/unban` `/timeout` `/untimeout` — sanctionner un membre (expulsion, bannissement, mise en sourdine).',
-      '`/warn` `/warnings` `/unwarn` — avertir un membre, voir ou retirer ses avertissements.',
-      '`/clear` — supprimer des messages récents. `/slowmode` — régler le mode lent d\'un salon.',
-      '`/lock` `/unlock` `/lockdown` `/unlockdown` — verrouiller un salon (ou tous) en cas de besoin.',
-      '',
-      '**📁 Historique**',
-      '`/case` — voir le détail d\'un cas précis. `/modlogs` — voir tout l\'historique d\'un membre.',
-      '',
-      '**⚙️ Configuration**',
-      '`/setmodlog` — définir le salon des logs. `/staffrole` — gérer qui peut modérer.',
-      '`/permscmnds` — autoriser un rôle sur une commande précise. `/warnactions` — sanctions automatiques selon le nombre d\'avertissements.',
-      '`/automod` — anti-lien, anti-spam, anti-mention, anti-raid, mots interdits personnalisés, et `/automod grosmots` (filtre intégré multilingue de gros mots, supprime automatiquement le message).',
-      '',
-      '**🎫 Tickets**',
-      '`/ticket setup` — configurer la catégorie et le rôle support. `/ticket panel` — poster le bouton "Ouvrir un ticket".',
-      'Une fois DANS un ticket : `/ticket close` (le ferme), `/ticket add` / `/ticket remove` (gérer qui y a accès).',
-      '',
-      '**🔍 Recherche**',
-      '`/findsalon` — chercher un salon par mot-clé. `/findsource` — retrouver les liens/pièces jointes postés dans un ou plusieurs salons.',
-      '',
-      '**🤖 IA**',
-      '`/ai` (configuration) · `/ask` (poser une question) · `/language` (langue principale par défaut du serveur).',
-      'Mentionne le bot ou écris dans un salon IA pour discuter, dans n\'importe quelle langue : il retient la langue de chaque personne pour lui reparler pareil ensuite. Demande-lui "montre les logs" ou "logs du rôle X" (staff uniquement).',
-    ].join('\n');
-
-    const forcedLang = interaction.options.getString('langue');
-    const savedUser = db.peekUser(interaction.user.id);
-    const targetLang = forcedLang || savedUser?.language || null;
-    let finalText = HELP_TEXT;
-    if (targetLang && targetLang.toLowerCase() !== 'fr' && targetLang.toLowerCase() !== 'français' && process.env.GEMINI_API_KEY) {
-      const t = await ai.translate(HELP_TEXT, targetLang);
-      if (!t.error) finalText = t.text;
-    }
-
-    const embed = new EmbedBuilder().setColor(mod.COLORS.info).setTitle('📘 Commandes du bot').setDescription(finalText.slice(0, 4000));
+    const embed = new EmbedBuilder().setColor(mod.COLORS.info).setTitle('📘 Commandes du bot').addFields(
+      { name: 'Modération', value: '`/kick` `/ban` `/unban` `/timeout` `/untimeout` `/warn` `/warnings` `/unwarn` `/clear` `/slowmode` `/lock` `/unlock` `/lockdown` `/unlockdown`' },
+      { name: 'Historique', value: '`/case` `/modlogs`' },
+      { name: 'Configuration', value: '`/setmodlog` `/staffrole` `/warnactions` `/automod`' },
+      { name: 'IA (Claude)', value: '`/ai` (config) · `/ask` (poser une question) · mentionne le bot ou écris dans un salon IA pour discuter, dans n\'importe quelle langue' },
+    );
     await interaction.editReply({ embeds: [embed] });
     return;
   }
@@ -906,119 +551,24 @@ async function routeInteraction(interaction) {
   if (interaction.commandName === 'ask') {
     await interaction.deferReply();
     const question = interaction.options.getString('question');
-    const logsReply = await handleLogsIntent({ guild, member: interaction.member, g, text: question });
-    if (logsReply) { await interaction.editReply({ content: logsReply, allowedMentions: { parse: [] } }); return; }
-    const mentionedIds = [...new Set([...question.matchAll(/<@!?(\d+)>/g)].map((m) => m[1]))];
-    const mentionedMembers = (await Promise.all(mentionedIds.map((id) => guild.members.cache.get(id) || guild.members.fetch(id).catch(() => null)))).filter(Boolean);
-    const namedMembers = await resolveMembersByName(guild, question, [interaction.user.id, ...mentionedMembers.map((m) => m.id)]);
-    const otherMembers = [...mentionedMembers, ...namedMembers];
-    const savedUser = db.peekUser(interaction.user.id);
-    const res = await ai.askClaude({ channelId: interaction.channelId, userId: interaction.user.id, userName: interaction.user.username, userText: question, persona: g.aiPersona, serverContext: buildServerContext(guild, interaction.member, otherMembers), savedLang: savedUser?.language || null, defaultLang: g.aiLanguage || null });
-    if (res.langCode) { const u = db.getUser(interaction.user.id); if (u.language !== res.langCode) { u.language = res.langCode; await db.saveUser(interaction.user.id); } }
+    const res = await ai.askClaude({ channelId: interaction.channelId, userId: interaction.user.id, userName: interaction.user.username, userText: question, persona: g.aiPersona, serverContext: buildServerContext(guild), speakerInfo: buildSpeakerInfo(interaction.member), guild });
     await interaction.editReply(res.error ? `❌ ${res.error}` : res.text);
     return;
   }
 
-  const nonStaffAllowed = new Set(['warnings', 'help', 'findsalon', 'ticket']); // /warnings et /ticket gèrent eux-mêmes leurs cas particuliers
-  const roleAllowedForCmd = (g.cmdPerms?.[interaction.commandName] || []).some((r) => interaction.member.roles.cache.has(r));
-  if (!nonStaffAllowed.has(interaction.commandName) && !roleAllowedForCmd && !mod.hasModPerms(interaction.member, g)) {
+  const nonStaffAllowed = new Set(['warnings', 'help']); // /warnings gère lui-même le cas "soi-même"
+  if (!nonStaffAllowed.has(interaction.commandName) && !mod.hasModPerms(interaction.member, g)) {
     await interaction.reply({ content: "❌ Tu n'as pas la permission d'utiliser cette commande (Administrateur, Gérer le serveur, ou un rôle autorisé via `/staffrole`).", ephemeral: true });
     return;
   }
 
-  await interaction.deferReply({ ephemeral: ['warnings', 'modlogs', 'case', 'staffrole', 'warnactions', 'automod', 'ai', 'help', 'setmodlog', 'permscmnds', 'language', 'ticket'].includes(interaction.commandName) });
+  await interaction.deferReply({ ephemeral: ['warnings', 'modlogs', 'case', 'staffrole', 'warnactions', 'automod', 'ai', 'help', 'setmodlog'].includes(interaction.commandName) });
   await handleModCommand(interaction, guild, g);
-}
-
-// ----------------------------------------------------------------
-// SYSTÈME DE TICKETS — interactions par bouton (panneau, prise en charge,
-// fermeture avec confirmation).
-// ----------------------------------------------------------------
-async function routeButton(interaction) {
-  if (!interaction.guildId || !interaction.customId.startsWith('ticket_')) return;
-  const guild = interaction.guild;
-  const g = db.get(guild.id);
-  const t = g.tickets;
-
-  if (interaction.customId === 'ticket_open') {
-    if (!t.enabled || !t.categoryId) { await interaction.reply({ content: "❌ Le système de tickets n'est pas configuré.", ephemeral: true }); return; }
-    const already = Object.entries(t.open).find(([, v]) => v.userId === interaction.user.id);
-    if (already) { await interaction.reply({ content: `❌ Tu as déjà un ticket ouvert : <#${already[0]}>.`, ephemeral: true }); return; }
-
-    await interaction.deferReply({ ephemeral: true });
-    const number = t.counter++;
-    const safeName = interaction.user.username.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 20) || 'membre';
-    let channel;
-    try {
-      channel = await guild.channels.create({
-        name: `ticket-${number}-${safeName}`,
-        type: ChannelType.GuildText,
-        parent: t.categoryId,
-        permissionOverwrites: [
-          { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-          { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-          ...(t.supportRoleId ? [{ id: t.supportRoleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }] : []),
-          { id: guild.members.me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageChannels] },
-        ],
-      });
-    } catch (e) { await interaction.editReply(`❌ Impossible de créer le salon de ticket (${e.message}).`); return; }
-
-    t.open[channel.id] = { userId: interaction.user.id, claimedBy: null, createdAt: Date.now(), number };
-    await db.save(guild.id);
-
-    const embed = new EmbedBuilder().setColor(mod.COLORS.ticket).setTitle(`🎫 Ticket #${number}`)
-      .setDescription(t.welcomeMessage || `Bienvenue ${interaction.user} ! Décris ta demande, un membre du staff va te répondre rapidement.`)
-      .setFooter({ text: 'Système de tickets' }).setTimestamp();
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('ticket_claim').setLabel('Prendre en charge').setEmoji('🙋').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('ticket_close_ask').setLabel('Fermer').setEmoji('🔒').setStyle(ButtonStyle.Danger),
-    );
-    await channel.send({ content: `${interaction.user}${t.supportRoleId ? ` <@&${t.supportRoleId}>` : ''}`, embeds: [embed], components: [row] });
-    await interaction.editReply(`✅ Ton ticket a été créé : ${channel}`);
-    return;
-  }
-
-  const entry = t.open[interaction.channelId];
-  if (!entry) { await interaction.reply({ content: "❌ Ce ticket n'existe plus.", ephemeral: true }); return; }
-
-  if (interaction.customId === 'ticket_claim') {
-    if (!mod.hasModPerms(interaction.member, g)) { await interaction.reply({ content: '❌ Réservé au staff.', ephemeral: true }); return; }
-    entry.claimedBy = interaction.user.id;
-    await db.save(guild.id);
-    const oldEmbed = interaction.message.embeds[0];
-    const embed = oldEmbed ? EmbedBuilder.from(oldEmbed).addFields({ name: 'Pris en charge par', value: `${interaction.user}` }) : new EmbedBuilder().setColor(mod.COLORS.ticket);
-    const oldRow = interaction.message.components[0];
-    const row = new ActionRowBuilder().addComponents(
-      ButtonBuilder.from(oldRow.components[0]).setDisabled(true).setLabel('Pris en charge'),
-      ButtonBuilder.from(oldRow.components[1]),
-    );
-    await interaction.update({ embeds: [embed], components: [row] });
-    return;
-  }
-
-  if (interaction.customId === 'ticket_close_ask') {
-    if (entry.userId !== interaction.user.id && !mod.hasModPerms(interaction.member, g)) { await interaction.reply({ content: "❌ Seul l'auteur du ticket ou le staff peut le fermer.", ephemeral: true }); return; }
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('ticket_close_confirm').setLabel('Confirmer la fermeture').setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId('ticket_close_cancel').setLabel('Annuler').setStyle(ButtonStyle.Secondary),
-    );
-    await interaction.reply({ content: '⚠️ Confirmer la fermeture de ce ticket ?', components: [row], ephemeral: true });
-    return;
-  }
-
-  if (interaction.customId === 'ticket_close_cancel') { await interaction.update({ content: 'Fermeture annulée.', components: [] }); return; }
-
-  if (interaction.customId === 'ticket_close_confirm') {
-    await interaction.update({ content: '🔒 Fermeture en cours...', components: [] });
-    await closeTicket(guild, interaction.channel, g, interaction.user);
-    return;
-  }
 }
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     await dbReadyPromise;
-    if (interaction.isButton()) { await routeButton(interaction); return; }
     await routeInteraction(interaction);
   } catch (err) {
     if (err && err.code === 40060) { dup.count++; dup.lastAt = Date.now(); console.warn('🚨 Une autre copie du bot répond aussi (Termux + Render ?).'); return; }
@@ -1046,17 +596,8 @@ client.on(Events.MessageCreate, async (message) => {
 
     const text = message.content.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim();
     if (!text) return;
-
-    const logsReply = await handleLogsIntent({ guild: message.guild, member: message.member, g, text });
-    if (logsReply) { await message.reply({ content: logsReply, allowedMentions: { parse: [] } }); return; }
-
     await message.channel.sendTyping().catch(() => {});
-    const mentionedMembers = [...message.mentions.members.values()].filter((m) => m.id !== client.user.id);
-    const namedMembers = await resolveMembersByName(message.guild, text, [message.author.id, client.user.id, ...mentionedMembers.map((m) => m.id)]);
-    const otherMembers = [...mentionedMembers, ...namedMembers];
-    const savedUser = db.peekUser(message.author.id);
-    const res = await ai.askClaude({ channelId: message.channelId, userId: message.author.id, userName: message.author.username, userText: text, persona: g.aiPersona, serverContext: buildServerContext(message.guild, message.member, otherMembers), savedLang: savedUser?.language || null, defaultLang: g.aiLanguage || null });
-    if (res.langCode) { const u = db.getUser(message.author.id); if (u.language !== res.langCode) { u.language = res.langCode; await db.saveUser(message.author.id); } }
+    const res = await ai.askClaude({ channelId: message.channelId, userId: message.author.id, userName: message.author.username, userText: text, persona: g.aiPersona, serverContext: buildServerContext(message.guild), speakerInfo: buildSpeakerInfo(message.member), guild: message.guild });
     const out = res.error ? `❌ ${res.error}` : res.text;
     await message.reply({ content: out, allowedMentions: { repliedUser: false } });
   } catch (e) { console.error('Erreur MessageCreate :', e); }
