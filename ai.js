@@ -46,12 +46,65 @@ const BASE_SYSTEM_PROMPT = [
   "La liste des salons fournie plus bas est déjà filtrée : elle ne contient QUE les salons que CETTE personne peut voir vu son/ses rôle(s). Ne propose donc jamais un salon en dehors de cette liste, et si elle demande un salon qui n'y figure pas, dis-lui simplement que tu ne le vois pas depuis son rôle actuel (sans jamais révéler le nom d'un salon caché).",
 ].join('\n');
 
+// Appel brut à Gemini, sans historique de conversation : utilisé par
+// askClaude (avec historique) et par translate() (traduction ponctuelle,
+// ex: /help dans la langue de la personne).
+async function callGemini(system, contents) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return { error: "La clé GEMINI_API_KEY n'est pas configurée sur le bot." };
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 40000);
+    let res;
+    try {
+      res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            contents,
+            systemInstruction: { parts: [{ text: system }] },
+            generationConfig: { maxOutputTokens: 1200 },
+          }),
+          signal: controller.signal,
+        }
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
+    const data = await res.json();
+    if (!res.ok) {
+      console.error('Erreur API Gemini :', data?.error?.message || res.status);
+      return { error: `Erreur API (${data?.error?.status || res.status}) : ${data?.error?.message || 'inconnue'}` };
+    }
+    const raw = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('\n').trim() || '(réponse vide)';
+    return { raw };
+  } catch (e) {
+    const msg = e.name === 'AbortError' ? 'Gemini a mis trop de temps à répondre (40s), abandon.' : e.message;
+    console.error('Appel API Gemini impossible :', msg);
+    return { error: `Impossible de contacter Gemini (${msg}).` };
+  }
+}
+
+// Traduit un texte fixe (ex: le texte du /help) vers la langue demandée
+// (code ISO comme "en"/"es" ou nom libre comme "english"). Préserve les
+// noms de commandes (`/xxx`) et le formatage Markdown/emojis tels quels.
+async function translate(text, targetLang) {
+  const system = [
+    `Tu es un traducteur. Traduis INTÉGRALEMENT le texte suivant en "${targetLang}".`,
+    "Ne traduis JAMAIS les noms de commandes qui commencent par un slash (ex: /kick, /ticket setup) : garde-les EXACTEMENT tels quels.",
+    'Conserve exactement la mise en forme Markdown (gras **...**, listes, retours à la ligne) et tous les emojis, dans le même ordre.',
+    "Ne rajoute aucun commentaire, aucune introduction, aucune note : réponds UNIQUEMENT avec le texte traduit.",
+  ].join('\n');
+  const res = await callGemini(system, [{ role: 'user', parts: [{ text }] }]);
+  if (res.error) return { error: res.error };
+  return { text: res.raw };
+}
+
 // Le nom "askClaude" est gardé tel quel pour ne pas avoir à toucher index.js
 // ailleurs (seul ce fichier change), même si ça parle maintenant à Gemini.
 async function askClaude({ channelId, userId, userName, userText, persona, serverContext, savedLang, defaultLang }) {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return { error: "La clé GEMINI_API_KEY n'est pas configurée sur le bot." };
-
   const key = historyKey(channelId, userId);
   pushHistory(key, 'user', userText);
   // Gemini utilise les rôles "user" et "model" (pas "assistant").
@@ -69,48 +122,17 @@ async function askClaude({ channelId, userId, userName, userText, persona, serve
       : '',
   ].filter(Boolean).join('\n');
 
-  try {
-    // Limite de temps : si Gemini ne répond pas en 40s, on abandonne proprement
-    // au lieu de rester bloqué et de faire planter la commande Discord.
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 40000);
-    let res;
-    try {
-      res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            contents,
-            systemInstruction: { parts: [{ text: system }] },
-            generationConfig: { maxOutputTokens: 600 },
-          }),
-          signal: controller.signal,
-        }
-      );
-    } finally {
-      clearTimeout(timeout);
-    }
-    const data = await res.json();
-    if (!res.ok) {
-      console.error('Erreur API Gemini :', data?.error?.message || res.status);
-      return { error: `Erreur API (${data?.error?.status || res.status}) : ${data?.error?.message || 'inconnue'}` };
-    }
-    const raw = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('\n').trim() || '(réponse vide)';
-    // Extrait le tag "LANGCODE:xx" que le modèle place en première ligne
-    // (voir LANGCODE_INSTRUCTION) pour savoir dans quelle langue il a
-    // répondu, sans jamais montrer ce tag à l'utilisateur.
-    const match = raw.match(/^LANGCODE:\s*([a-zA-Z]{2,3})\s*\n+([\s\S]*)$/);
-    const langCode = match ? match[1].toLowerCase() : null;
-    const text = (match ? match[2] : raw).trim() || '(réponse vide)';
-    pushHistory(key, 'assistant', text);
-    return { text: text.length > MAX_REPLY_CHARS ? `${text.slice(0, MAX_REPLY_CHARS)}…` : text, langCode };
-  } catch (e) {
-    const msg = e.name === 'AbortError' ? 'Gemini a mis trop de temps à répondre (40s), abandon.' : e.message;
-    console.error('Appel API Gemini impossible :', msg);
-    return { error: `Impossible de contacter Gemini (${msg}).` };
-  }
+  const res = await callGemini(system, contents);
+  if (res.error) return { error: res.error };
+  const raw = res.raw;
+  // Extrait le tag "LANGCODE:xx" que le modèle place en première ligne
+  // (voir LANGCODE_INSTRUCTION) pour savoir dans quelle langue il a
+  // répondu, sans jamais montrer ce tag à l'utilisateur.
+  const match = raw.match(/^LANGCODE:\s*([a-zA-Z]{2,3})\s*\n+([\s\S]*)$/);
+  const langCode = match ? match[1].toLowerCase() : null;
+  const text = (match ? match[2] : raw).trim() || '(réponse vide)';
+  pushHistory(key, 'assistant', text);
+  return { text: text.length > MAX_REPLY_CHARS ? `${text.slice(0, MAX_REPLY_CHARS)}…` : text, langCode };
 }
 
-module.exports = { askClaude, resetHistory };
+module.exports = { askClaude, resetHistory, translate };

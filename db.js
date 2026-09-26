@@ -22,6 +22,7 @@ function defaultGuild() {
       antiSpam: { enabled: true, maxMessages: 6, perSeconds: 7, timeoutMinutes: 10 },
       antiMention: { enabled: true, maxMentions: 5, timeoutMinutes: 10 },
       badWords: { enabled: false, words: [] },
+      profanity: { enabled: true },  // filtre intégré multilingue de gros mots (/automod grosmots)
       antiRaid: { enabled: true, joinThreshold: 6, windowSeconds: 20, minAccountAgeDays: 3, action: 'timeout' }, // action: 'timeout' | 'kick' | 'alert_only'
     },
     warnThresholds: [
@@ -35,6 +36,16 @@ function defaultGuild() {
     aiLanguage: null,         // langue principale par défaut (/language), ex: "français", "english"...
     aiPersona: null,          // instruction supplémentaire optionnelle (ton, personnalité)
     cmdPerms: {},             // commande -> [roleId] autorisés en plus du staff (/permscmnds)
+    tickets: {
+      enabled: false,
+      categoryId: null,       // catégorie où sont créés les salons de tickets
+      supportRoleId: null,    // rôle support ajouté automatiquement à chaque ticket
+      panelChannelId: null,   // salon où est posté le panneau (/ticket panel)
+      panelMessageId: null,
+      welcomeMessage: null,   // message d'accueil personnalisé optionnel
+      counter: 1,             // numéro du prochain ticket
+      open: {},                // channelId -> { userId, claimedBy, createdAt, number }
+    },
   };
 }
 function defaultUser() {
@@ -52,7 +63,13 @@ function normalizeGuild(data) {
       antiSpam: { ...base.automod.antiSpam, ...(d.automod?.antiSpam || {}) },
       antiMention: { ...base.automod.antiMention, ...(d.automod?.antiMention || {}) },
       badWords: { ...base.automod.badWords, ...(d.automod?.badWords || {}) },
+      profanity: { ...base.automod.profanity, ...(d.automod?.profanity || {}) },
       antiRaid: { ...base.automod.antiRaid, ...(d.automod?.antiRaid || {}) },
+    },
+    tickets: {
+      ...base.tickets,
+      ...(d.tickets || {}),
+      open: { ...(d.tickets?.open || {}) },
     },
   };
 }

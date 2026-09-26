@@ -4,6 +4,46 @@ const { COLORS, postToModLog, caseEmbed } = require('./moderation');
 
 const INVITE_RE = /(discord\.gg|discord(?:app)?\.com\/invite)\/[a-z0-9-]+/i;
 
+// ------------------------------------------------------------------
+// Filtre intégré multilingue de gros mots ("/automod grosmots").
+// Liste volontairement centrée sur les grossièretés courantes (pas
+// d'insultes à caractère raciste/homophobe/etc., pour éviter les abus de
+// cette liste) — pour filtrer des injures ciblées, le staff garde
+// /automod motsinterdits (liste perso, mot par mot).
+// ------------------------------------------------------------------
+const PROFANITY_WORDS = [
+  // Français
+  'putain', 'pute', 'salope', 'connard', 'connasse', 'encule', 'enculé', 'enculer',
+  'batard', 'bâtard', 'merde', 'niquer', 'nique', 'foutre', 'branler', 'branleur',
+  'couille', 'couillon', 'chiotte', 'pd', 'salaud',
+  // Anglais
+  'fuck', 'fucking', 'motherfucker', 'shit', 'bullshit', 'bitch', 'asshole',
+  'bastard', 'dick', 'cunt', 'whore', 'slut', 'douchebag', 'wanker', 'twat',
+  // Espagnol
+  'mierda', 'puta', 'puto', 'cabron', 'cabrón', 'joder', 'gilipollas', 'pendejo',
+  'coño', 'chinga', 'chingar', 'verga',
+  // Allemand
+  'scheisse', 'scheiße', 'arschloch', 'hurensohn', 'fotze', 'wichser',
+  // Italien
+  'cazzo', 'stronzo', 'puttana', 'merda', 'vaffanculo', 'coglione',
+  // Portugais
+  'porra', 'caralho', 'merda', 'puta', 'foda-se', 'cacete', 'desgraça',
+];
+
+// Substitutions leetspeak/contournement courantes, appliquées avant de tester
+// le message contre PROFANITY_WORDS (ex: "p*t@in", "f4ck", "sh1t").
+const LEET_MAP = { '@': 'a', '4': 'a', '3': 'e', '1': 'i', '!': 'i', '0': 'o', '$': 's', '5': 's', '7': 't', '+': 't' };
+function normalizeForProfanity(text) {
+  let s = (text || '').toLowerCase();
+  s = s.replace(/[@43!105\$\+]/g, (ch) => LEET_MAP[ch] || ch);
+  // Recolle les lettres séparées par UN caractère de camouflage isolé
+  // (ex: "p*tain", "f.u.c.k", "n_i_q_u_e_r") sans casser les vrais espaces.
+  for (let i = 0; i < 2; i++) s = s.replace(/([a-zà-ÿ])[^a-zà-ÿ\s]([a-zà-ÿ])/g, '$1$2');
+  s = s.replace(/(.)\1{2,}/g, '$1$1'); // "puuutain" → "puutain"
+  return s;
+}
+const PROFANITY_RE = new RegExp(`\\b(${PROFANITY_WORDS.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\w{0,3}\\b`, 'i');
+
 // Fenêtres glissantes en mémoire (pas besoin de les garder après un
 // redémarrage). Clé : `${guildId}:${userId}` pour spam/mentions, `${guildId}`
 // pour les arrivées (anti-raid).
@@ -57,6 +97,15 @@ async function checkMessage(message) {
       await postToModLog(message.client, g, caseEmbed(c, message.guild.name));
       return true;
     }
+  }
+
+  // ---- Gros mots (filtre intégré multilingue) ----
+  if (am.profanity?.enabled && PROFANITY_RE.test(normalizeForProfanity(content))) {
+    await deleteSafely(message);
+    const c = db.addCase(g, { type: 'automod-delete', userId: message.author.id, moderatorId: null, reason: 'Langage grossier détecté (filtre intégré)' });
+    await db.save(message.guild.id);
+    await postToModLog(message.client, g, caseEmbed(c, message.guild.name));
+    return true;
   }
 
   // ---- Anti-mention (spam de mentions) ----

@@ -7,6 +7,7 @@ const ai = require('./ai');
 const {
   Client, GatewayIntentBits, Partials, Events, PermissionFlagsBits, ChannelType,
   EmbedBuilder, REST, Routes, SlashCommandBuilder,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder,
 } = require('discord.js');
 
 process.on('unhandledRejection', (err) => console.error('Promesse rejetée non gérée :', err));
@@ -251,6 +252,8 @@ const commands = [
     .addSubcommand((s) => s.setName('motsinterdits').setDescription('Filtrer des mots')
       .addStringOption((o) => o.setName('action').setDescription('Action').setRequired(true).addChoices({ name: 'ajouter', value: 'add' }, { name: 'retirer', value: 'remove' }, { name: 'liste', value: 'list' }, { name: 'on', value: 'on' }, { name: 'off', value: 'off' }))
       .addStringOption((o) => o.setName('mot').setDescription('Le mot (pour ajouter/retirer)')))
+    .addSubcommand((s) => s.setName('grosmots').setDescription('Filtre intégré multilingue (FR/EN/ES/DE/IT/PT) qui supprime les gros mots')
+      .addStringOption((o) => o.setName('etat').setDescription('on/off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' })))
     .addSubcommand((s) => s.setName('antiraid').setDescription('Anti-raid (afflux anormal de nouveaux membres)')
       .addStringOption((o) => o.setName('etat').setDescription('on/off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' }))
       .addIntegerOption((o) => o.setName('seuil').setDescription("Nb d'arrivées déclenchant l'alerte"))
@@ -286,7 +289,26 @@ const commands = [
   new SlashCommandBuilder().setName('findsalon').setDescription('Chercher un salon par mot-clé (nom ou description)')
     .addStringOption((o) => o.setName('mot').setDescription('Mot-clé à chercher').setRequired(true)),
 
-  new SlashCommandBuilder().setName('help').setDescription('Voir toutes les commandes'),
+  new SlashCommandBuilder().setName('ticket').setDescription('Système de tickets de support')
+    .addSubcommand((s) => s.setName('setup').setDescription('Configurer le système de tickets')
+      .addChannelOption((o) => o.setName('categorie').setDescription('Catégorie où créer les salons de tickets').setRequired(true).addChannelTypes(ChannelType.GuildCategory))
+      .addRoleOption((o) => o.setName('role_support').setDescription('Rôle ajouté automatiquement à chaque ticket').setRequired(true))
+      .addStringOption((o) => o.setName('message').setDescription("Message d'accueil personnalisé dans chaque ticket")))
+    .addSubcommand((s) => s.setName('panel').setDescription('Poster le panneau "Ouvrir un ticket" dans ce salon'))
+    .addSubcommand((s) => s.setName('close').setDescription('Fermer le ticket en cours (à utiliser DANS le salon du ticket)'))
+    .addSubcommand((s) => s.setName('add').setDescription('Ajouter quelqu\'un au ticket en cours').addUserOption((o) => o.setName('membre').setDescription('Le membre').setRequired(true)))
+    .addSubcommand((s) => s.setName('remove').setDescription('Retirer quelqu\'un du ticket en cours').addUserOption((o) => o.setName('membre').setDescription('Le membre').setRequired(true))),
+
+  new SlashCommandBuilder().setName('findsource').setDescription('Chercher les sources (liens/pièces jointes) postées dans un ou plusieurs salons')
+    .addChannelOption((o) => o.setName('salon').setDescription('Salon à fouiller').setRequired(true).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
+    .addChannelOption((o) => o.setName('salon2').setDescription('2e salon (optionnel)').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
+    .addChannelOption((o) => o.setName('salon3').setDescription('3e salon (optionnel)').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
+    .addStringOption((o) => o.setName('mot').setDescription('Mot-clé à chercher dans le message (optionnel)'))
+    .addUserOption((o) => o.setName('membre').setDescription('Ne garder que les sources de cette personne'))
+    .addIntegerOption((o) => o.setName('limite').setDescription('Nb de messages récents à fouiller par salon (défaut 100, max 500)').setMinValue(10).setMaxValue(500)),
+
+  new SlashCommandBuilder().setName('help').setDescription('Voir toutes les commandes')
+    .addStringOption((o) => o.setName('langue').setDescription('Forcer une langue précise pour cette réponse (sinon : ta langue connue)')),
 ].map((c) => c.setDMPermission(false).toJSON());
 
 const ownerCommands = [
@@ -317,6 +339,38 @@ client.once(Events.ClientReady, async () => {
     } catch (e) { /* MP fermés, tant pis */ }
   }
 });
+
+// ----------------------------------------------------------------
+// SYSTÈME DE TICKETS — fermeture (transcript envoyé aux logs + suppression
+// du salon après un court délai, pour laisser le temps de lire le message).
+// ----------------------------------------------------------------
+async function closeTicket(guild, channel, g, closedBy) {
+  const entry = g.tickets.open[channel.id];
+  try {
+    const messages = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+    if (messages) {
+      const lines = [...messages.values()].reverse().map((m) => `[${new Date(m.createdTimestamp).toISOString()}] ${m.author.tag}: ${m.content || '(sans texte)'}${m.attachments.size ? ` [${m.attachments.size} pièce(s) jointe(s)]` : ''}`);
+      if (g.modLogChannelId) {
+        const embed = new EmbedBuilder().setColor(mod.COLORS.ticketClose).setTitle(`🔒 Ticket fermé — #${entry?.number ?? '?'}`)
+          .addFields(
+            { name: 'Ouvert par', value: entry ? `<@${entry.userId}>` : 'inconnu', inline: true },
+            { name: 'Fermé par', value: `<@${closedBy.id}>`, inline: true },
+            { name: 'Pris en charge par', value: entry?.claimedBy ? `<@${entry.claimedBy}>` : 'personne', inline: true },
+          ).setTimestamp();
+        await mod.postToModLog(guild.client, g, embed);
+        try {
+          const logChannel = await guild.client.channels.fetch(g.modLogChannelId);
+          const attachment = new AttachmentBuilder(Buffer.from(lines.join('\n') || '(vide)', 'utf8'), { name: `transcript-${channel.name}.txt` });
+          await logChannel.send({ files: [attachment] });
+        } catch (e) { /* pas de perms d'envoi de fichier, tant pis pour le transcript */ }
+      }
+    }
+  } catch (e) { console.error('Transcript ticket impossible :', e.message); }
+  delete g.tickets.open[channel.id];
+  await db.save(guild.id);
+  try { await channel.send('🔒 Ce ticket va être supprimé dans 5 secondes...'); } catch (e) { /* ignore */ }
+  setTimeout(() => { channel.delete('Ticket fermé').catch(() => {}); }, 5000);
+}
 
 // ----------------------------------------------------------------
 // MODÉRATION MANUELLE
@@ -602,6 +656,12 @@ async function handleModCommand(interaction, guild, g) {
       await reply(`✅ Anti-raid : ${am.antiRaid.enabled ? 'activé' : 'désactivé'} (seuil ${am.antiRaid.joinThreshold}/${am.antiRaid.windowSeconds}s, âge min ${am.antiRaid.minAccountAgeDays}j, action: ${am.antiRaid.action}).`);
       return;
     }
+    if (sub === 'grosmots') {
+      am.profanity.enabled = interaction.options.getString('etat') === 'on';
+      await db.save(guild.id);
+      await reply(`✅ Filtre de gros mots intégré (FR/EN/ES/DE/IT/PT) : ${am.profanity.enabled ? 'activé' : 'désactivé'}.`);
+      return;
+    }
   }
 
   if (cmd === 'ai') {
@@ -629,6 +689,65 @@ async function handleModCommand(interaction, guild, g) {
       g.aiLanguage = interaction.options.getString('langue');
       await db.save(guild.id);
       await reply(`✅ Langue principale du bot sur ce serveur : **${g.aiLanguage}**. Il l'utilisera avec tout le monde, sauf avec ceux qui lui parlent (ou lui ont déjà parlé) dans une autre langue : dans ce cas il retient leur langue et continue à leur répondre pareil à chaque fois.`);
+      return;
+    }
+  }
+
+  if (cmd === 'ticket') {
+    const sub = interaction.options.getSubcommand();
+    const t = g.tickets;
+
+    if (sub === 'setup') {
+      if (!mod.hasModPerms(interaction.member, g)) { await reply('❌ Réservé au staff.'); return; }
+      const categorie = interaction.options.getChannel('categorie');
+      const role = interaction.options.getRole('role_support');
+      const message = interaction.options.getString('message');
+      t.enabled = true;
+      t.categoryId = categorie.id;
+      t.supportRoleId = role.id;
+      if (message) t.welcomeMessage = message;
+      await db.save(guild.id);
+      await reply(`✅ Système de tickets configuré : catégorie **${categorie.name}**, rôle support <@&${role.id}>. Poste le panneau avec \`/ticket panel\` dans le salon de ton choix.`);
+      return;
+    }
+
+    if (sub === 'panel') {
+      if (!mod.hasModPerms(interaction.member, g)) { await reply('❌ Réservé au staff.'); return; }
+      if (!t.enabled || !t.categoryId) { await reply('❌ Configure d\'abord le système avec `/ticket setup`.'); return; }
+      const embed = new EmbedBuilder().setColor(mod.COLORS.ticket).setTitle('🎫 Support — Ouvrir un ticket')
+        .setDescription(t.welcomeMessage || "Besoin d'aide ? Clique sur le bouton ci-dessous pour ouvrir un salon privé avec l'équipe.")
+        .setThumbnail(guild.iconURL() || null)
+        .setFooter({ text: guild.name });
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('ticket_open').setLabel('Ouvrir un ticket').setEmoji('🎫').setStyle(ButtonStyle.Success),
+      );
+      const msg = await interaction.channel.send({ embeds: [embed], components: [row] });
+      t.panelChannelId = interaction.channelId;
+      t.panelMessageId = msg.id;
+      await db.save(guild.id);
+      await reply('✅ Panneau posté dans ce salon.');
+      return;
+    }
+
+    // add/remove/close : utilisables DEPUIS le salon du ticket concerné.
+    const entry = t.open[interaction.channelId];
+    if (!entry) { await reply('❌ Cette commande s\'utilise DANS un salon de ticket.'); return; }
+
+    if (sub === 'add' || sub === 'remove') {
+      if (!mod.hasModPerms(interaction.member, g)) { await reply('❌ Réservé au staff.'); return; }
+      const membre = interaction.options.getUser('membre');
+      try {
+        if (sub === 'add') await interaction.channel.permissionOverwrites.edit(membre.id, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true });
+        else await interaction.channel.permissionOverwrites.delete(membre.id);
+      } catch (e) { await reply(`❌ Erreur (${e.message}).`); return; }
+      await reply(sub === 'add' ? `✅ ${membre} ajouté au ticket.` : `✅ ${membre} retiré du ticket.`);
+      return;
+    }
+
+    if (sub === 'close') {
+      if (entry.userId !== interaction.user.id && !mod.hasModPerms(interaction.member, g)) { await reply("❌ Seul l'auteur du ticket ou le staff peut le fermer."); return; }
+      await reply('🔒 Fermeture du ticket...');
+      await closeTicket(guild, interaction.channel, g, interaction.user);
       return;
     }
   }
@@ -668,14 +787,90 @@ async function handleModCommand(interaction, guild, g) {
     return;
   }
 
+  if (cmd === 'findsource') {
+    const channels = [interaction.options.getChannel('salon'), interaction.options.getChannel('salon2'), interaction.options.getChannel('salon3')].filter(Boolean);
+    const rawMot = interaction.options.getString('mot');
+    const mot = rawMot ? rawMot.toLowerCase() : null;
+    const membre = interaction.options.getUser('membre');
+    const limite = interaction.options.getInteger('limite') || 100;
+    const URL_RE = /https?:\/\/\S+/i;
+
+    let found = [];
+    for (const channel of channels) {
+      const perms = channel.permissionsFor(botMember);
+      if (!perms?.has(PermissionFlagsBits.ViewChannel) || !perms?.has(PermissionFlagsBits.ReadMessageHistory)) continue;
+      let fetched = 0, lastId;
+      // Pagine par lots de 100 (max Discord) jusqu'à la limite demandée.
+      while (fetched < limite) {
+        const batch = await channel.messages.fetch({ limit: Math.min(100, limite - fetched), ...(lastId ? { before: lastId } : {}) }).catch(() => null);
+        if (!batch || !batch.size) break;
+        fetched += batch.size;
+        lastId = batch.last().id;
+        for (const m of batch.values()) {
+          const isSource = m.attachments.size > 0 || URL_RE.test(m.content) || m.embeds.length > 0;
+          if (!isSource) continue;
+          if (membre && m.author.id !== membre.id) continue;
+          if (mot && !m.content.toLowerCase().includes(mot)) continue;
+          found.push(m);
+        }
+        if (batch.size < 100) break;
+      }
+    }
+
+    if (!found.length) { await reply(`🔍 Aucune source trouvée dans ${channels.join(' ')}${mot ? ` pour "${rawMot}"` : ''}${membre ? ` de ${membre}` : ''}.`); return; }
+
+    found.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+    const top = found.slice(0, 15);
+    const lines = top.map((m) => {
+      const snippet = m.content ? (m.content.length > 100 ? `${m.content.slice(0, 100)}…` : m.content) : (m.attachments.size ? `📎 ${m.attachments.size} pièce(s) jointe(s)` : '🔗 lien');
+      return `[🔗](${m.url}) **${m.author.tag}** dans ${m.channel} — <t:${Math.floor(m.createdTimestamp / 1000)}:R>\n> ${snippet}`;
+    });
+    const embed = new EmbedBuilder().setColor(mod.COLORS.source).setTitle(`🔍 Sources trouvées (${found.length}${found.length > top.length ? `, 15 plus récentes affichées` : ''})`)
+      .setDescription(lines.join('\n\n').slice(0, 4000))
+      .setFooter({ text: `Fouillé : ${channels.map((c) => `#${c.name}`).join(', ')}${mot ? ` · mot: "${rawMot}"` : ''}${membre ? ` · membre: ${membre.tag}` : ''}` });
+    await interaction.editReply({ embeds: [embed] });
+    return;
+  }
+
+
   if (cmd === 'help') {
-    const embed = new EmbedBuilder().setColor(mod.COLORS.info).setTitle('📘 Commandes du bot').addFields(
-      { name: 'Modération', value: '`/kick` `/ban` `/unban` `/timeout` `/untimeout` `/warn` `/warnings` `/unwarn` `/clear` `/slowmode` `/lock` `/unlock` `/lockdown` `/unlockdown`' },
-      { name: 'Historique', value: '`/case` `/modlogs`' },
-      { name: 'Configuration', value: '`/setmodlog` `/staffrole` `/permscmnds` `/warnactions` `/automod`' },
-      { name: 'Salons', value: '`/findsalon` (chercher un salon par mot-clé)' },
-      { name: 'IA (Claude)', value: '`/ai` (config) · `/ask` (poser une question) · `/language` (langue principale par défaut) · mentionne le bot ou écris dans un salon IA pour discuter, dans n\'importe quelle langue. Le bot retient la langue de chaque personne pour lui reparler pareil ensuite. Demande-lui "montre les logs" ou "logs du rôle X" (staff uniquement).' },
-    );
+    const HELP_TEXT = [
+      '**🛡️ Modération**',
+      '`/kick` `/ban` `/unban` `/timeout` `/untimeout` — sanctionner un membre (expulsion, bannissement, mise en sourdine).',
+      '`/warn` `/warnings` `/unwarn` — avertir un membre, voir ou retirer ses avertissements.',
+      '`/clear` — supprimer des messages récents. `/slowmode` — régler le mode lent d\'un salon.',
+      '`/lock` `/unlock` `/lockdown` `/unlockdown` — verrouiller un salon (ou tous) en cas de besoin.',
+      '',
+      '**📁 Historique**',
+      '`/case` — voir le détail d\'un cas précis. `/modlogs` — voir tout l\'historique d\'un membre.',
+      '',
+      '**⚙️ Configuration**',
+      '`/setmodlog` — définir le salon des logs. `/staffrole` — gérer qui peut modérer.',
+      '`/permscmnds` — autoriser un rôle sur une commande précise. `/warnactions` — sanctions automatiques selon le nombre d\'avertissements.',
+      '`/automod` — anti-lien, anti-spam, anti-mention, anti-raid, mots interdits personnalisés, et `/automod grosmots` (filtre intégré multilingue de gros mots, supprime automatiquement le message).',
+      '',
+      '**🎫 Tickets**',
+      '`/ticket setup` — configurer la catégorie et le rôle support. `/ticket panel` — poster le bouton "Ouvrir un ticket".',
+      'Une fois DANS un ticket : `/ticket close` (le ferme), `/ticket add` / `/ticket remove` (gérer qui y a accès).',
+      '',
+      '**🔍 Recherche**',
+      '`/findsalon` — chercher un salon par mot-clé. `/findsource` — retrouver les liens/pièces jointes postés dans un ou plusieurs salons.',
+      '',
+      '**🤖 IA**',
+      '`/ai` (configuration) · `/ask` (poser une question) · `/language` (langue principale par défaut du serveur).',
+      'Mentionne le bot ou écris dans un salon IA pour discuter, dans n\'importe quelle langue : il retient la langue de chaque personne pour lui reparler pareil ensuite. Demande-lui "montre les logs" ou "logs du rôle X" (staff uniquement).',
+    ].join('\n');
+
+    const forcedLang = interaction.options.getString('langue');
+    const savedUser = db.peekUser(interaction.user.id);
+    const targetLang = forcedLang || savedUser?.language || null;
+    let finalText = HELP_TEXT;
+    if (targetLang && targetLang.toLowerCase() !== 'fr' && targetLang.toLowerCase() !== 'français' && process.env.GEMINI_API_KEY) {
+      const t = await ai.translate(HELP_TEXT, targetLang);
+      if (!t.error) finalText = t.text;
+    }
+
+    const embed = new EmbedBuilder().setColor(mod.COLORS.info).setTitle('📘 Commandes du bot').setDescription(finalText.slice(0, 4000));
     await interaction.editReply({ embeds: [embed] });
     return;
   }
@@ -724,20 +919,106 @@ async function routeInteraction(interaction) {
     return;
   }
 
-  const nonStaffAllowed = new Set(['warnings', 'help', 'findsalon']); // /warnings gère lui-même le cas "soi-même"
+  const nonStaffAllowed = new Set(['warnings', 'help', 'findsalon', 'ticket']); // /warnings et /ticket gèrent eux-mêmes leurs cas particuliers
   const roleAllowedForCmd = (g.cmdPerms?.[interaction.commandName] || []).some((r) => interaction.member.roles.cache.has(r));
   if (!nonStaffAllowed.has(interaction.commandName) && !roleAllowedForCmd && !mod.hasModPerms(interaction.member, g)) {
     await interaction.reply({ content: "❌ Tu n'as pas la permission d'utiliser cette commande (Administrateur, Gérer le serveur, ou un rôle autorisé via `/staffrole`).", ephemeral: true });
     return;
   }
 
-  await interaction.deferReply({ ephemeral: ['warnings', 'modlogs', 'case', 'staffrole', 'warnactions', 'automod', 'ai', 'help', 'setmodlog', 'permscmnds', 'language'].includes(interaction.commandName) });
+  await interaction.deferReply({ ephemeral: ['warnings', 'modlogs', 'case', 'staffrole', 'warnactions', 'automod', 'ai', 'help', 'setmodlog', 'permscmnds', 'language', 'ticket'].includes(interaction.commandName) });
   await handleModCommand(interaction, guild, g);
+}
+
+// ----------------------------------------------------------------
+// SYSTÈME DE TICKETS — interactions par bouton (panneau, prise en charge,
+// fermeture avec confirmation).
+// ----------------------------------------------------------------
+async function routeButton(interaction) {
+  if (!interaction.guildId || !interaction.customId.startsWith('ticket_')) return;
+  const guild = interaction.guild;
+  const g = db.get(guild.id);
+  const t = g.tickets;
+
+  if (interaction.customId === 'ticket_open') {
+    if (!t.enabled || !t.categoryId) { await interaction.reply({ content: "❌ Le système de tickets n'est pas configuré.", ephemeral: true }); return; }
+    const already = Object.entries(t.open).find(([, v]) => v.userId === interaction.user.id);
+    if (already) { await interaction.reply({ content: `❌ Tu as déjà un ticket ouvert : <#${already[0]}>.`, ephemeral: true }); return; }
+
+    await interaction.deferReply({ ephemeral: true });
+    const number = t.counter++;
+    const safeName = interaction.user.username.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 20) || 'membre';
+    let channel;
+    try {
+      channel = await guild.channels.create({
+        name: `ticket-${number}-${safeName}`,
+        type: ChannelType.GuildText,
+        parent: t.categoryId,
+        permissionOverwrites: [
+          { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+          { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+          ...(t.supportRoleId ? [{ id: t.supportRoleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }] : []),
+          { id: guild.members.me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageChannels] },
+        ],
+      });
+    } catch (e) { await interaction.editReply(`❌ Impossible de créer le salon de ticket (${e.message}).`); return; }
+
+    t.open[channel.id] = { userId: interaction.user.id, claimedBy: null, createdAt: Date.now(), number };
+    await db.save(guild.id);
+
+    const embed = new EmbedBuilder().setColor(mod.COLORS.ticket).setTitle(`🎫 Ticket #${number}`)
+      .setDescription(t.welcomeMessage || `Bienvenue ${interaction.user} ! Décris ta demande, un membre du staff va te répondre rapidement.`)
+      .setFooter({ text: 'Système de tickets' }).setTimestamp();
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('ticket_claim').setLabel('Prendre en charge').setEmoji('🙋').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('ticket_close_ask').setLabel('Fermer').setEmoji('🔒').setStyle(ButtonStyle.Danger),
+    );
+    await channel.send({ content: `${interaction.user}${t.supportRoleId ? ` <@&${t.supportRoleId}>` : ''}`, embeds: [embed], components: [row] });
+    await interaction.editReply(`✅ Ton ticket a été créé : ${channel}`);
+    return;
+  }
+
+  const entry = t.open[interaction.channelId];
+  if (!entry) { await interaction.reply({ content: "❌ Ce ticket n'existe plus.", ephemeral: true }); return; }
+
+  if (interaction.customId === 'ticket_claim') {
+    if (!mod.hasModPerms(interaction.member, g)) { await interaction.reply({ content: '❌ Réservé au staff.', ephemeral: true }); return; }
+    entry.claimedBy = interaction.user.id;
+    await db.save(guild.id);
+    const oldEmbed = interaction.message.embeds[0];
+    const embed = oldEmbed ? EmbedBuilder.from(oldEmbed).addFields({ name: 'Pris en charge par', value: `${interaction.user}` }) : new EmbedBuilder().setColor(mod.COLORS.ticket);
+    const oldRow = interaction.message.components[0];
+    const row = new ActionRowBuilder().addComponents(
+      ButtonBuilder.from(oldRow.components[0]).setDisabled(true).setLabel('Pris en charge'),
+      ButtonBuilder.from(oldRow.components[1]),
+    );
+    await interaction.update({ embeds: [embed], components: [row] });
+    return;
+  }
+
+  if (interaction.customId === 'ticket_close_ask') {
+    if (entry.userId !== interaction.user.id && !mod.hasModPerms(interaction.member, g)) { await interaction.reply({ content: "❌ Seul l'auteur du ticket ou le staff peut le fermer.", ephemeral: true }); return; }
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('ticket_close_confirm').setLabel('Confirmer la fermeture').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('ticket_close_cancel').setLabel('Annuler').setStyle(ButtonStyle.Secondary),
+    );
+    await interaction.reply({ content: '⚠️ Confirmer la fermeture de ce ticket ?', components: [row], ephemeral: true });
+    return;
+  }
+
+  if (interaction.customId === 'ticket_close_cancel') { await interaction.update({ content: 'Fermeture annulée.', components: [] }); return; }
+
+  if (interaction.customId === 'ticket_close_confirm') {
+    await interaction.update({ content: '🔒 Fermeture en cours...', components: [] });
+    await closeTicket(guild, interaction.channel, g, interaction.user);
+    return;
+  }
 }
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     await dbReadyPromise;
+    if (interaction.isButton()) { await routeButton(interaction); return; }
     await routeInteraction(interaction);
   } catch (err) {
     if (err && err.code === 40060) { dup.count++; dup.lastAt = Date.now(); console.warn('🚨 Une autre copie du bot répond aussi (Termux + Render ?).'); return; }
