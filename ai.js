@@ -29,11 +29,12 @@ const BASE_SYSTEM_PROMPT = [
   "RÈGLE ABSOLUE : réponds TOUJOURS dans la langue utilisée par la personne dans son dernier message, quelle qu'elle soit (français, anglais, arabe, espagnol...), même si les messages précédents étaient dans une autre langue.",
   'Reste concis (Discord affiche mal les pavés de texte) : quelques phrases suffisent, sauf si on te demande explicitement plus de détails.',
   "Tu n'es pas un modérateur : si on te demande de bannir/kick/muter quelqu'un, dis que seul le staff peut faire ça avec les commandes du bot (/ban, /kick, /timeout...).",
+  "Si un membre cherche un salon, un rôle, ou demande où trouver quelque chose sur le serveur, utilise la liste de salons/rôles fournie plus bas pour l'orienter précisément.",
 ].join('\n');
 
 // Le nom "askClaude" est gardé tel quel pour ne pas avoir à toucher index.js
 // ailleurs (seul ce fichier change), même si ça parle maintenant à Gemini.
-async function askClaude({ channelId, userId, userName, userText, persona }) {
+async function askClaude({ channelId, userId, userName, userText, persona, serverContext }) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return { error: "La clé GEMINI_API_KEY n'est pas configurée sur le bot." };
 
@@ -45,13 +46,18 @@ async function askClaude({ channelId, userId, userName, userText, persona }) {
     parts: [{ text: m.content }],
   }));
 
-  const system = persona ? `${BASE_SYSTEM_PROMPT}\n\nPersonnalité demandée par le staff : ${persona}` : BASE_SYSTEM_PROMPT;
+  const system = [
+    persona ? `${BASE_SYSTEM_PROMPT}\n\nPersonnalité demandée par le staff : ${persona}` : BASE_SYSTEM_PROMPT,
+    serverContext
+      ? `\nVoici la structure de CE serveur Discord (pour orienter les membres et répondre à des questions comme "où est le salon X ?" ou "quel rôle pour Y ?") :\n${serverContext}\nQuand tu mentionnes un salon ou un rôle de cette liste, utilise EXACTEMENT le format <#id> ou <@&id> donné entre parenthèses (ça devient un lien/mention cliquable pour la personne). N'invente jamais un salon ou un rôle qui n'est pas dans cette liste.`
+      : '',
+  ].filter(Boolean).join('\n');
 
   try {
-    // Limite de temps : si Gemini ne répond pas en 25s, on abandonne proprement
+    // Limite de temps : si Gemini ne répond pas en 40s, on abandonne proprement
     // au lieu de rester bloqué et de faire planter la commande Discord.
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 25000);
+    const timeout = setTimeout(() => controller.abort(), 40000);
     let res;
     try {
       res = await fetch(
@@ -79,7 +85,7 @@ async function askClaude({ channelId, userId, userName, userText, persona }) {
     pushHistory(key, 'assistant', text);
     return { text: text.length > MAX_REPLY_CHARS ? `${text.slice(0, MAX_REPLY_CHARS)}…` : text };
   } catch (e) {
-    const msg = e.name === 'AbortError' ? 'Gemini a mis trop de temps à répondre (25s), abandon.' : e.message;
+    const msg = e.name === 'AbortError' ? 'Gemini a mis trop de temps à répondre (40s), abandon.' : e.message;
     console.error('Appel API Gemini impossible :', msg);
     return { error: `Impossible de contacter Gemini (${msg}).` };
   }

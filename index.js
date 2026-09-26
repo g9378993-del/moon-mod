@@ -12,6 +12,30 @@ const {
 process.on('unhandledRejection', (err) => console.error('Promesse rejetée non gérée :', err));
 process.on('uncaughtException', (err) => console.error('Exception non gérée :', err));
 
+// ----------------------------------------------------------------
+// CONTEXTE SERVEUR POUR L'IA (salons + rôles), pour orienter les membres
+// ----------------------------------------------------------------
+// Reconstruit à chaque appel (pas de cache) : les salons/rôles peuvent
+// changer entre deux messages, et c'est rapide (cache local de discord.js).
+function buildServerContext(guild) {
+  const channels = guild.channels.cache
+    .filter((c) => c.type === ChannelType.GuildText || c.type === ChannelType.GuildAnnouncement)
+    .sort((a, b) => a.rawPosition - b.rawPosition)
+    .map((c) => `#${c.name} (<#${c.id}>)${c.topic ? ` — ${c.topic.slice(0, 80)}` : ''}`)
+    .slice(0, 60);
+
+  const roles = guild.roles.cache
+    .filter((r) => r.id !== guild.id && !r.managed) // pas @everyone, pas les rôles de bots
+    .sort((a, b) => b.position - a.position)
+    .map((r) => `@${r.name} (<@&${r.id}>)`)
+    .slice(0, 40);
+
+  return [
+    `Salons textuels :\n${channels.join('\n') || 'aucun'}`,
+    `Rôles :\n${roles.join('\n') || 'aucun'}`,
+  ].join('\n\n');
+}
+
 const INSTANCE_ID = crypto.randomBytes(2).toString('hex');
 const STARTED_AT = Date.now();
 const dup = { count: 0, lastAt: null };
@@ -518,7 +542,7 @@ async function routeInteraction(interaction) {
   if (interaction.commandName === 'ask') {
     await interaction.deferReply();
     const question = interaction.options.getString('question');
-    const res = await ai.askClaude({ channelId: interaction.channelId, userId: interaction.user.id, userName: interaction.user.username, userText: question, persona: g.aiPersona });
+    const res = await ai.askClaude({ channelId: interaction.channelId, userId: interaction.user.id, userName: interaction.user.username, userText: question, persona: g.aiPersona, serverContext: buildServerContext(guild) });
     await interaction.editReply(res.error ? `❌ ${res.error}` : res.text);
     return;
   }
@@ -564,7 +588,7 @@ client.on(Events.MessageCreate, async (message) => {
     const text = message.content.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim();
     if (!text) return;
     await message.channel.sendTyping().catch(() => {});
-    const res = await ai.askClaude({ channelId: message.channelId, userId: message.author.id, userName: message.author.username, userText: text, persona: g.aiPersona });
+    const res = await ai.askClaude({ channelId: message.channelId, userId: message.author.id, userName: message.author.username, userText: text, persona: g.aiPersona, serverContext: buildServerContext(message.guild) });
     const out = res.error ? `❌ ${res.error}` : res.text;
     await message.reply({ content: out, allowedMentions: { repliedUser: false } });
   } catch (e) { console.error('Erreur MessageCreate :', e); }
