@@ -458,10 +458,32 @@ function buildHelpRow(selected) {
   return new ActionRowBuilder().addComponents(menu);
 }
 async function routeSelect(interaction) {
-  if (interaction.customId !== 'help_select' || !interaction.guild) return;
-  const key = interaction.values[0];
-  await interaction.update({ embeds: [buildHelpEmbed(key, interaction.guild)], components: [buildHelpRow(key)] });
+  if (!interaction.guild) return;
+
+  if (interaction.customId === 'help_select') {
+    const key = interaction.values[0];
+    await interaction.update({ embeds: [buildHelpEmbed(key, interaction.guild)], components: [buildHelpRow(key)] });
+    return;
+  }
+
+  if (interaction.customId === 'findcodes_select') {
+    const messageId = interaction.values[0];
+    const channel = interaction.channel;
+    try {
+      const m = await channel.messages.fetch(messageId);
+      const snippet = m.content ? (m.content.length > 1500 ? `${m.content.slice(0, 1500)}…` : m.content) : '(sans texte)';
+      const filesList = m.attachments.size ? `\n\n**Fichiers joints :**\n${[...m.attachments.values()].map((a) => `• \`${a.name}\` (${(a.size / 1024).toFixed(1)} KB)`).join('\n')}` : '';
+      const embed = new EmbedBuilder().setColor(mod.COLORS.source).setTitle(`📄 Message de ${m.author.tag}`)
+        .setDescription(snippet + filesList)
+        .setFooter({ text: `Posté <t:${Math.floor(m.createdTimestamp / 1000)}:R> · Lien: ${m.url}` });
+      await interaction.update({ embeds: [embed], components: [] });
+    } catch (e) {
+      await interaction.update({ content: `❌ Impossible de récupérer ce message (${e.message}).`, components: [] });
+    }
+    return;
+  }
 }
+
 
 // ----------------------------------------------------------------
 // DÉMARRAGE / SUIVI DE VIE
@@ -817,48 +839,60 @@ async function handleModCommand(interaction, guild, g) {
     const perms = channel.permissionsFor(botMember);
     if (!perms?.has(PermissionFlagsBits.ViewChannel) || !perms?.has(PermissionFlagsBits.ReadMessageHistory)) { await reply(`❌ Je n'ai pas accès à l'historique de ${channel}.`); return; }
 
-    // Normalisation : minuscules + accents retirés, pour que "école"/"ecole"
-    // ou "École" matchent pareil.
     const normalize = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-    // Recherche par mots-clés : chaque mot de la recherche doit apparaître
-    // QUELQUE PART dans le NOM DU FICHIER (pas besoin que ce soit exact, ni
-    // dans le même ordre) — ex: "txt" matche "message.txt", "rapport"
-    // matche "rapport_final.pdf".
     const terms = normalize(rawQuery).split(/\s+/).filter(Boolean);
 
-    // On ne cherche que parmi les fichiers joints (pas le texte des
-    // messages) : c'est un fichier qu'on veut retrouver, pas un message.
-    let foundFiles = [], fetched = 0, lastId;
+    // Cherche dans le contenu du message ET les noms de fichiers (pas juste les fichiers joints)
+    let found = [], fetched = 0, lastId;
     while (fetched < limite) {
       const batch = await channel.messages.fetch({ limit: Math.min(100, limite - fetched), ...(lastId ? { before: lastId } : {}) }).catch(() => null);
       if (!batch || !batch.size) break;
       fetched += batch.size;
       lastId = batch.last().id;
       for (const m of batch.values()) {
-        for (const a of m.attachments.values()) {
-          const name = normalize(a.name || '');
-          if (terms.every((t) => name.includes(t))) foundFiles.push({ attachment: a, message: m });
+        // Normalise le contenu du message
+        const contentNorm = normalize(m.content || '');
+        const allFileNames = [...m.attachments.values()].map((a) => normalize(a.name || '')).join(' ');
+        // Chaque terme doit apparaître quelque part
+        const contentMatch = terms.every((t) => contentNorm.includes(t));
+        const fileMatch = terms.every((t) => allFileNames.includes(t));
+        if (contentMatch || fileMatch) {
+          found.push(m);
         }
       }
       if (batch.size < 100) break;
     }
 
-    if (!foundFiles.length) { await reply(`🔍 Aucun fichier nommé "${rawQuery}" dans ${channel} (${fetched} message(s) fouillé(s)).`); return; }
+    if (!found.length) { await reply(`🔍 Aucun résultat pour "${rawQuery}" dans ${channel} (${fetched} message(s) fouillé(s)).`); return; }
 
-    foundFiles.sort((a, b) => b.message.createdTimestamp - a.message.createdTimestamp);
-    // Discord n'accepte que 10 fichiers joints max par message.
-    const top = foundFiles.slice(0, 10);
-    const lines = top.map(({ attachment, message }) => `[🔗](${message.url}) **${message.author.tag}** — <t:${Math.floor(message.createdTimestamp / 1000)}:R> — \`${attachment.name}\``);
-    const embed = new EmbedBuilder().setColor(mod.COLORS.source).setTitle(`📎 "${rawQuery}" — ${foundFiles.length} fichier(s) trouvé(s) dans #${channel.name}`)
-      .setDescription(lines.join('\n').slice(0, 4000))
-      .setFooter({ text: `${fetched} message(s) fouillé(s)${foundFiles.length > top.length ? ` · 10 fichiers les plus récents joints (sur ${foundFiles.length} trouvés)` : ''}` });
-    // On rejoint les vrais fichiers à la réponse (pas juste un lien vers le
-    // message) : Discord les affichera comme des pièces jointes normales,
-    // téléchargeables directement.
-    await interaction.editReply({ embeds: [embed], files: top.map(({ attachment }) => attachment.url) }).catch(async (e) => {
-      // Si le renvoi des fichiers échoue (ex: trop volumineux pour ce serveur), on retombe sur les liens.
-      await interaction.editReply({ content: `⚠️ Impossible de rejoindre certains fichiers (${e.message}), voici les liens :`, embeds: [embed] }).catch(() => {});
+    found.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+    
+    // Si trop de résultats, utiliser un select menu pour que l'utilisateur choisisse
+    if (found.length > 25) {
+      const grouped = found.slice(0, 25).map((m, i) => {
+        const snippet = m.content ? (m.content.length > 80 ? `${m.content.slice(0, 80)}…` : m.content) : (m.attachments.size ? `📎 ${m.attachments.size} fichier(s)` : '(vide)');
+        return { label: `#${i + 1} — ${m.author.username} — ${snippet}`, value: m.id, description: `<t:${Math.floor(m.createdTimestamp / 1000)}:R>` };
+      });
+      const menu = new StringSelectMenuBuilder().setCustomId('findcodes_select').setPlaceholder('Choisir un résultat...')
+        .addOptions(grouped);
+      const row = new ActionRowBuilder().addComponents(menu);
+      const embed = new EmbedBuilder().setColor(mod.COLORS.source).setTitle(`🔍 "${rawQuery}" — ${found.length} résultat(s) dans #${channel.name}`)
+        .setDescription(`Trop de résultats (${found.length}). Choisis un message ci-dessous pour voir plus de détails sur celui-ci (affiche les 25 plus récents).`)
+        .setFooter({ text: `${fetched} message(s) fouillé(s)` });
+      await interaction.editReply({ embeds: [embed], components: [row] });
+      return;
+    }
+
+    // Si peu de résultats, affiche tout directement
+    const lines = found.slice(0, 15).map((m) => {
+      const snippet = m.content ? (m.content.length > 150 ? `${m.content.slice(0, 150)}…` : m.content) : (m.attachments.size ? `📎 ${m.attachments.size} fichier(s)` : '(sans texte)');
+      const files = m.attachments.size ? `\n📎 Fichiers: ${[...m.attachments.values()].map((a) => `\`${a.name}\``).join(' ')}` : '';
+      return `[🔗](${m.url}) **${m.author.tag}** — <t:${Math.floor(m.createdTimestamp / 1000)}:R>\n> ${snippet}${files}`;
     });
+    const embed = new EmbedBuilder().setColor(mod.COLORS.source).setTitle(`🔍 "${rawQuery}" — ${found.length} résultat(s) dans #${channel.name}`)
+      .setDescription(lines.join('\n\n').slice(0, 4000))
+      .setFooter({ text: `${fetched} message(s) fouillé(s)${found.length > 15 ? ' · 15 plus récents affichés' : ''}` });
+    await interaction.editReply({ embeds: [embed] });
     return;
   }
 

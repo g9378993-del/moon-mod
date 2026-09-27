@@ -1,6 +1,6 @@
 const { PermissionFlagsBits, EmbedBuilder } = require('discord.js');
 
-const COLORS = { kick: 0xFF9F43, ban: 0xE74C3C, warn: 0xF1C40F, timeout: 0xE67E22, unban: 0x2ECC71, untimeout: 0x2ECC71, automod: 0x9B59B6, raid: 0xC0392B, info: 0x5865F2, ticket: 0x57F287, ticketClose: 0xED4245, source: 0x5865F2 };
+const COLORS = { kick: 0xE74C3C, ban: 0xE74C3C, warn: 0xE74C3C, timeout: 0xE74C3C, unban: 0xE74C3C, untimeout: 0xE74C3C, automod: 0xE74C3C, raid: 0xE74C3C, info: 0xE74C3C, ticket: 0xE74C3C, ticketClose: 0xE74C3C, source: 0xE74C3C };
 const MAX_TIMEOUT_MS = 28 * 24 * 3600 * 1000; // limite imposée par Discord
 
 // Qui peut utiliser les commandes de modération : Administrateur, Gérer le
