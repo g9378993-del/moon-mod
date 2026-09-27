@@ -476,7 +476,7 @@ async function routeSelect(interaction) {
       const msg = await targetChannel.messages.fetch(msgId);
       const att = [...msg.attachments.values()][parseInt(attIndexStr, 10)];
       if (!att) { await interaction.editReply(`❌ Fichier introuvable dans le message.`); return; }
-      const fileData = await (await fetch(att.url)).buffer();
+      const fileData = Buffer.from(await (await fetch(att.url)).arrayBuffer());
       const attachment = { file: fileData, name: att.name };
       await interaction.editReply({ content: `📥 **${att.name}** (${(att.size / 1024).toFixed(1)} KB)`, files: [attachment] });
     } catch (e) {
@@ -497,7 +497,7 @@ async function routeSelect(interaction) {
       const msg = await targetChannel.messages.fetch(msgId);
       const att = [...msg.attachments.values()][attIndex];
       if (!att) { await interaction.editReply(`❌ Fichier introuvable.`); return; }
-      const fileData = await (await fetch(att.url)).buffer();
+      const fileData = Buffer.from(await (await fetch(att.url)).arrayBuffer());
       if (fileData.length > 25 * 1024 * 1024) { await interaction.editReply(`❌ Fichier trop volumineux (${(fileData.length / 1024 / 1024).toFixed(1)} MB, max 25 MB).`); return; }
       const attachment = { file: fileData, name: att.name };
       await interaction.editReply({ content: `📥 **${att.name}** (${(att.size / 1024).toFixed(1)} KB)`, files: [attachment] });
