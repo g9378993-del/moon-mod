@@ -625,13 +625,55 @@ async function handleModCommand(interaction, guild, g) {
   }
 
   if (cmd === 'help') {
-    const embed = new EmbedBuilder().setColor(mod.COLORS.info).setTitle('📘 Commandes du bot').addFields(
-      { name: 'Modération', value: '`/kick` `/ban` `/unban` `/timeout` `/untimeout` `/warn` `/warnings` `/unwarn` `/clear` `/slowmode` `/lock` `/unlock` `/lockdown` `/unlockdown`' },
-      { name: 'Historique', value: '`/case` `/modlogs`' },
-      { name: 'Configuration', value: '`/setmodlog` `/staffrole` `/warnactions` `/automod`' },
-      { name: 'Déobfuscation', value: '`/deobf` (envoyer un script .lua/.luau, staff uniquement)' },
-      { name: 'IA (Claude)', value: '`/ai` (config) · `/ask` (poser une question) · mentionne le bot ou écris dans un salon IA pour discuter, dans n\'importe quelle langue' },
-    );
+    const embed = new EmbedBuilder()
+      .setColor(mod.COLORS.info)
+      .setAuthor({ name: guild.name, iconURL: guild.iconURL() || undefined })
+      .setTitle('📘 Guide des commandes')
+      .setDescription("Voici tout ce que je sais faire sur ce serveur, classé par catégorie. Les commandes marquées **(staff)** demandent une permission particulière (Administrateur, Gérer le serveur, ou un rôle autorisé via `/staffrole`).")
+      .setThumbnail(client.user.displayAvatarURL())
+      .addFields(
+        {
+          name: '🔨 Modération (staff)',
+          value: [
+            '`/kick` `/ban` `/unban` — expulser, bannir, débannir un membre',
+            '`/timeout` `/untimeout` — réduire au silence temporairement, ou lever',
+            '`/warn` `/warnings` `/unwarn` — avertir un membre et consulter/annuler ses avertissements',
+            '`/clear` — supprimer plusieurs messages d\'un coup',
+            '`/slowmode` — limiter la fréquence des messages dans un salon',
+            '`/lock` `/unlock` — bloquer/débloquer l\'écriture dans un salon',
+            '`/lockdown` `/unlockdown` — bloquer/débloquer TOUS les salons d\'un coup',
+          ].join('\n'),
+        },
+        {
+          name: '📜 Historique (staff)',
+          value: [
+            '`/case` — voir le détail d\'une sanction précise (son numéro)',
+            '`/modlogs` — voir l\'historique des sanctions d\'un membre',
+          ].join('\n'),
+        },
+        {
+          name: '⚙️ Configuration (staff)',
+          value: [
+            '`/setmodlog` — choisir le salon où sont publiées les sanctions',
+            '`/staffrole` — donner accès aux commandes staff à un rôle',
+            '`/warnactions` — définir ce qui se passe à X avertissements',
+            '`/automod` — régler la modération automatique (liens, spam, insultes...)',
+          ].join('\n'),
+        },
+        {
+          name: '🧩 Déobfuscation (staff)',
+          value: '`/deobf` — envoie un script `.lua`/`.luau` en pièce jointe, le bot te renvoie une version lisible.',
+        },
+        {
+          name: '🤖 Assistant IA — tout le monde',
+          value: [
+            '`/ask` — pose une question directement à l\'IA',
+            '`/ai` — réglages du chat IA (salons autorisés, personnalité...)',
+            '💬 Mentionne le bot ou écris dans un salon IA pour discuter librement, dans **n\'importe quelle langue**',
+          ].join('\n'),
+        },
+      )
+      .setFooter({ text: '💡 Astuce : tape "/" dans Discord pour voir la description complète et les options de chaque commande.' });
     await interaction.editReply({ embeds: [embed] });
     return;
   }
