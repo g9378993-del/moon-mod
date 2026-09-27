@@ -468,11 +468,11 @@ async function routeSelect(interaction) {
 
   if (interaction.customId === 'findcodes_select') {
     const value = interaction.values[0];
-    const [msgId, fileName] = value.split(':');
+    const [msgId, attIndexStr] = value.split(':');
     await interaction.deferReply({ ephemeral: true });
     try {
       const msg = await interaction.channel.messages.fetch(msgId);
-      const att = msg.attachments.find((a) => a.name === fileName);
+      const att = [...msg.attachments.values()][parseInt(attIndexStr, 10)];
       if (!att) { await interaction.editReply(`❌ Fichier introuvable dans le message.`); return; }
       const fileData = await (await fetch(att.url)).buffer();
       const attachment = { file: fileData, name: att.name };
@@ -486,10 +486,11 @@ async function routeSelect(interaction) {
   if (interaction.customId.startsWith('findcodes_dl_')) {
     const parts = interaction.customId.split('_');
     const msgId = parts[2];
+    const attIndex = parseInt(parts[3], 10) || 0;
     await interaction.deferReply({ ephemeral: true });
     try {
       const msg = await interaction.channel.messages.fetch(msgId);
-      const att = [...msg.attachments.values()][0];  // 1er fichier du message
+      const att = [...msg.attachments.values()][attIndex];
       if (!att) { await interaction.editReply(`❌ Fichier introuvable.`); return; }
       const fileData = await (await fetch(att.url)).buffer();
       if (fileData.length > 25 * 1024 * 1024) { await interaction.editReply(`❌ Fichier trop volumineux (${(fileData.length / 1024 / 1024).toFixed(1)} MB, max 25 MB).`); return; }
@@ -870,11 +871,13 @@ async function handleModCommand(interaction, guild, g) {
       fetched += batch.size;
       lastId = batch.last().id;
       for (const m of batch.values()) {
+        let attIndex = 0;
         for (const a of m.attachments.values()) {
           const fileName = normalize(a.name || '');
           if (terms.every((t) => fileName.includes(t))) {
-            allFiles.push({ name: a.name, size: a.size, url: a.url, msgUrl: m.url, author: m.author.tag, createdAt: m.createdTimestamp, msgId: m.id });
+            allFiles.push({ name: a.name, size: a.size, url: a.url, msgUrl: m.url, author: m.author.tag, createdAt: m.createdTimestamp, msgId: m.id, attIndex });
           }
+          attIndex += 1;
         }
       }
       if (batch.size < 100) break;  // fin du salon atteinte
@@ -887,7 +890,7 @@ async function handleModCommand(interaction, guild, g) {
     if (allFiles.length > 25) {
       const grouped = allFiles.slice(0, 25).map((f, i) => {
         const sizeStr = (f.size / 1024).toFixed(1);
-        return { label: `${i + 1}. ${f.name.slice(0, 80)}`, value: `${f.msgId}:${f.name}:${i}`, description: `${sizeStr} KB · ${f.author}` };
+        return { label: `${i + 1}. ${f.name.slice(0, 80)}`, value: `${f.msgId}:${f.attIndex}`, description: `${sizeStr} KB · ${f.author}` };
       });
       const menu = new StringSelectMenuBuilder().setCustomId('findcodes_select').setPlaceholder('Choisir un fichier à télécharger...').addOptions(grouped);
       const row = new ActionRowBuilder().addComponents(menu);
@@ -908,8 +911,8 @@ async function handleModCommand(interaction, guild, g) {
       .setDescription(`Les fichiers ci-dessous sont prêts à être téléchargés. Clique sur le nom d'un fichier pour l'obtenir.\n\n${lines.join('\n').slice(0, 4000)}`)
       .setFooter({ text: `${fetched} message(s) fouillé(s)` });
     
-    const buttons = allFiles.slice(0, 5).map((f, i) => 
-      new ButtonBuilder().setCustomId(`findcodes_dl_${f.msgId}_${i}`).setLabel(`📥 ${f.name.slice(0, 20)}`).setStyle(ButtonStyle.Primary)
+    const buttons = allFiles.slice(0, 5).map((f) =>
+      new ButtonBuilder().setCustomId(`findcodes_dl_${f.msgId}_${f.attIndex}`).setLabel(`📥 ${f.name.slice(0, 20)}`).setStyle(ButtonStyle.Primary)
     );
     const rows = [];
     for (let i = 0; i < buttons.length; i += 5) {
