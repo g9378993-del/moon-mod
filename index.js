@@ -361,15 +361,18 @@ const ownerCommands = [
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
   const body = [...commands, ...ownerCommands];
-  try {
-    await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body });
-    console.log(`Commandes slash enregistrées en global (${body.length} commandes). Propagation possible jusqu'à 1h.`);
-  } catch (err) { console.error('Erreur enregistrement des commandes (global) :', err); }
 
-  // En plus du global (qui peut prendre jusqu'à 1h à apparaître), on enregistre
-  // aussi directement sur chaque serveur où le bot est déjà présent : ça, c'est
-  // INSTANTANÉ. Ça garantit que les commandes soient visibles tout de suite,
-  // sans attendre la propagation globale de Discord.
+  // Vide les anciennes commandes globales (enregistrées avant ce correctif) —
+  // sinon elles restent affichées EN PLUS des commandes par serveur, ce qui
+  // donne des doublons dans Discord.
+  try {
+    await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: [] });
+    console.log('Anciennes commandes globales supprimées (pour éviter les doublons).');
+  } catch (err) { console.error('Erreur suppression des commandes globales :', err); }
+
+  // On enregistre UNIQUEMENT par serveur (pas en global) : c'est instantané,
+  // alors que le global peut prendre jusqu'à 1h et cause des doublons si les
+  // deux sont actifs en même temps.
   for (const guild of client.guilds.cache.values()) {
     try {
       await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, guild.id), { body });
@@ -379,6 +382,18 @@ async function registerCommands() {
     }
   }
 }
+
+// Un nouveau serveur ajoute le bot après le démarrage : on lui enregistre les
+// commandes tout de suite (sinon il faudrait attendre le prochain redémarrage).
+client.on(Events.GuildCreate, async (guild) => {
+  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+  try {
+    await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, guild.id), { body: [...commands, ...ownerCommands] });
+    console.log(`Commandes enregistrées instantanément sur le nouveau serveur ${guild.name} (${guild.id}).`);
+  } catch (err) {
+    console.error(`Erreur enregistrement des commandes sur ${guild.name} (${guild.id}) :`, err);
+  }
+});
 
 // ----------------------------------------------------------------
 // /help — court et pratique : un menu déroulant, une catégorie à la fois
@@ -798,10 +813,18 @@ async function handleModCommand(interaction, guild, g) {
   if (cmd === 'findcodes') {
     const channel = interaction.options.getChannel('salon');
     const rawQuery = interaction.options.getString('recherche');
-    const query = rawQuery.toLowerCase();
     const limite = interaction.options.getInteger('limite') || 300;
     const perms = channel.permissionsFor(botMember);
     if (!perms?.has(PermissionFlagsBits.ViewChannel) || !perms?.has(PermissionFlagsBits.ReadMessageHistory)) { await reply(`❌ Je n'ai pas accès à l'historique de ${channel}.`); return; }
+
+    // Normalisation : minuscules + accents retirés, pour que "école"/"ecole"
+    // ou "École" matchent pareil.
+    const normalize = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    // Recherche par mots-clés : chaque mot de la recherche doit apparaître
+    // QUELQUE PART dans le message (pas besoin que ce soit la phrase exacte,
+    // ni dans le même ordre) — beaucoup plus tolérant qu'une correspondance
+    // exacte.
+    const terms = normalize(rawQuery).split(/\s+/).filter(Boolean);
 
     let found = [], fetched = 0, lastId;
     while (fetched < limite) {
@@ -810,8 +833,12 @@ async function handleModCommand(interaction, guild, g) {
       fetched += batch.size;
       lastId = batch.last().id;
       for (const m of batch.values()) {
-        const haystack = [m.content, ...m.embeds.map((e) => `${e.title || ''} ${e.description || ''}`)].join(' ').toLowerCase();
-        if (haystack.includes(query)) found.push(m);
+        const haystack = normalize([
+          m.content,
+          ...m.embeds.map((e) => `${e.title || ''} ${e.description || ''}`),
+          ...m.attachments.map((a) => a.name || ''), // noms des fichiers joints — c'était manquant avant
+        ].join(' '));
+        if (terms.every((t) => haystack.includes(t))) found.push(m);
       }
       if (batch.size < 100) break;
     }
@@ -821,7 +848,7 @@ async function handleModCommand(interaction, guild, g) {
     found.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
     const top = found.slice(0, 15);
     const lines = top.map((m) => {
-      const snippet = m.content ? (m.content.length > 150 ? `${m.content.slice(0, 150)}…` : m.content) : (m.attachments.size ? `📎 ${m.attachments.size} pièce(s) jointe(s)` : '(sans texte)');
+      const snippet = m.content ? (m.content.length > 150 ? `${m.content.slice(0, 150)}…` : m.content) : (m.attachments.size ? `📎 ${[...m.attachments.values()].map((a) => a.name).join(', ')}` : '(sans texte)');
       return `[🔗](${m.url}) **${m.author.tag}** — <t:${Math.floor(m.createdTimestamp / 1000)}:R>\n> ${snippet}`;
     });
     const embed = new EmbedBuilder().setColor(mod.COLORS.source).setTitle(`🔍 "${rawQuery}" — ${found.length} résultat(s) dans #${channel.name}`)
