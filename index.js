@@ -108,7 +108,7 @@ async function ensureLuauBinary() {
 // ----------------------------------------------------------------
 const DEOBF_DIR = path.join(__dirname, 'deobf');
 const DEOBF_ENTRY = path.join(DEOBF_DIR, 'deob.py');
-const DEOBF_TIMEOUT_SEC = 60;
+const DEOBF_TIMEOUT_SEC = 90;
 
 // Si le dossier deobf/ n'est pas là mais qu'un deobf.zip traine à la racine
 // (upload web en un seul fichier, plus simple sur mobile qu'un dossier avec
