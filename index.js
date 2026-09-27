@@ -331,9 +331,9 @@ const commands = [
   new SlashCommandBuilder().setName('vider').setDescription('Vider complètement un salon (efface TOUT son historique, même au-delà de 14 jours)')
     .addChannelOption((o) => o.setName('salon').setDescription('Salon à vider (celui-ci par défaut)').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
 
-  new SlashCommandBuilder().setName('findcodes').setDescription('Chercher un texte précis (nom de source/fichier, code...) dans un salon')
+  new SlashCommandBuilder().setName('findcodes').setDescription('Retrouver des fichiers joints (par nom) envoyés dans un salon')
     .addChannelOption((o) => o.setName('salon').setDescription('Salon à fouiller').setRequired(true).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
-    .addStringOption((o) => o.setName('recherche').setDescription('Texte à chercher (ex: nom du fichier/source)').setRequired(true))
+    .addStringOption((o) => o.setName('recherche').setDescription('Nom (ou bout de nom / extension) du fichier à chercher, ex: "message" ou "txt"').setRequired(true))
     .addIntegerOption((o) => o.setName('limite').setDescription('Nb de messages récents à fouiller (défaut 300, max 1000)').setMinValue(20).setMaxValue(1000)),
 
   new SlashCommandBuilder().setName('ai').setDescription('Configurer le chat IA du bot')
@@ -431,7 +431,7 @@ const HELP_CATEGORIES = {
   },
   recherche: {
     label: '🔍 Recherche',
-    text: '`/findcodes` — cherche un texte précis (nom de fichier/source, code...) dans un salon.',
+    text: '`/findcodes` — retrouve des fichiers joints par nom (ex: "txt", "message") dans un salon, et te renvoie les fichiers eux-mêmes.',
   },
   ia: {
     label: '🤖 IA',
@@ -821,40 +821,44 @@ async function handleModCommand(interaction, guild, g) {
     // ou "École" matchent pareil.
     const normalize = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     // Recherche par mots-clés : chaque mot de la recherche doit apparaître
-    // QUELQUE PART dans le message (pas besoin que ce soit la phrase exacte,
-    // ni dans le même ordre) — beaucoup plus tolérant qu'une correspondance
-    // exacte.
+    // QUELQUE PART dans le NOM DU FICHIER (pas besoin que ce soit exact, ni
+    // dans le même ordre) — ex: "txt" matche "message.txt", "rapport"
+    // matche "rapport_final.pdf".
     const terms = normalize(rawQuery).split(/\s+/).filter(Boolean);
 
-    let found = [], fetched = 0, lastId;
+    // On ne cherche que parmi les fichiers joints (pas le texte des
+    // messages) : c'est un fichier qu'on veut retrouver, pas un message.
+    let foundFiles = [], fetched = 0, lastId;
     while (fetched < limite) {
       const batch = await channel.messages.fetch({ limit: Math.min(100, limite - fetched), ...(lastId ? { before: lastId } : {}) }).catch(() => null);
       if (!batch || !batch.size) break;
       fetched += batch.size;
       lastId = batch.last().id;
       for (const m of batch.values()) {
-        const haystack = normalize([
-          m.content,
-          ...m.embeds.map((e) => `${e.title || ''} ${e.description || ''}`),
-          ...m.attachments.map((a) => a.name || ''), // noms des fichiers joints — c'était manquant avant
-        ].join(' '));
-        if (terms.every((t) => haystack.includes(t))) found.push(m);
+        for (const a of m.attachments.values()) {
+          const name = normalize(a.name || '');
+          if (terms.every((t) => name.includes(t))) foundFiles.push({ attachment: a, message: m });
+        }
       }
       if (batch.size < 100) break;
     }
 
-    if (!found.length) { await reply(`🔍 Aucun résultat pour "${rawQuery}" dans ${channel} (${fetched} message(s) fouillé(s)).`); return; }
+    if (!foundFiles.length) { await reply(`🔍 Aucun fichier nommé "${rawQuery}" dans ${channel} (${fetched} message(s) fouillé(s)).`); return; }
 
-    found.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
-    const top = found.slice(0, 15);
-    const lines = top.map((m) => {
-      const snippet = m.content ? (m.content.length > 150 ? `${m.content.slice(0, 150)}…` : m.content) : (m.attachments.size ? `📎 ${[...m.attachments.values()].map((a) => a.name).join(', ')}` : '(sans texte)');
-      return `[🔗](${m.url}) **${m.author.tag}** — <t:${Math.floor(m.createdTimestamp / 1000)}:R>\n> ${snippet}`;
+    foundFiles.sort((a, b) => b.message.createdTimestamp - a.message.createdTimestamp);
+    // Discord n'accepte que 10 fichiers joints max par message.
+    const top = foundFiles.slice(0, 10);
+    const lines = top.map(({ attachment, message }) => `[🔗](${message.url}) **${message.author.tag}** — <t:${Math.floor(message.createdTimestamp / 1000)}:R> — \`${attachment.name}\``);
+    const embed = new EmbedBuilder().setColor(mod.COLORS.source).setTitle(`📎 "${rawQuery}" — ${foundFiles.length} fichier(s) trouvé(s) dans #${channel.name}`)
+      .setDescription(lines.join('\n').slice(0, 4000))
+      .setFooter({ text: `${fetched} message(s) fouillé(s)${foundFiles.length > top.length ? ` · 10 fichiers les plus récents joints (sur ${foundFiles.length} trouvés)` : ''}` });
+    // On rejoint les vrais fichiers à la réponse (pas juste un lien vers le
+    // message) : Discord les affichera comme des pièces jointes normales,
+    // téléchargeables directement.
+    await interaction.editReply({ embeds: [embed], files: top.map(({ attachment }) => attachment.url) }).catch(async (e) => {
+      // Si le renvoi des fichiers échoue (ex: trop volumineux pour ce serveur), on retombe sur les liens.
+      await interaction.editReply({ content: `⚠️ Impossible de rejoindre certains fichiers (${e.message}), voici les liens :`, embeds: [embed] }).catch(() => {});
     });
-    const embed = new EmbedBuilder().setColor(mod.COLORS.source).setTitle(`🔍 "${rawQuery}" — ${found.length} résultat(s) dans #${channel.name}`)
-      .setDescription(lines.join('\n\n').slice(0, 4000))
-      .setFooter({ text: `${fetched} message(s) fouillé(s)${found.length > top.length ? ' · 15 plus récents affichés' : ''}` });
-    await interaction.editReply({ embeds: [embed] });
     return;
   }
 
