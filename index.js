@@ -467,19 +467,12 @@ async function routeSelect(interaction) {
   }
 
   if (interaction.customId === 'findcodes_select') {
-    const messageId = interaction.values[0];
-    const channel = interaction.channel;
-    try {
-      const m = await channel.messages.fetch(messageId);
-      const snippet = m.content ? (m.content.length > 1500 ? `${m.content.slice(0, 1500)}…` : m.content) : '(sans texte)';
-      const filesList = m.attachments.size ? `\n\n**Fichiers joints :**\n${[...m.attachments.values()].map((a) => `• \`${a.name}\` (${(a.size / 1024).toFixed(1)} KB)`).join('\n')}` : '';
-      const embed = new EmbedBuilder().setColor(mod.COLORS.source).setTitle(`📄 Message de ${m.author.tag}`)
-        .setDescription(snippet + filesList)
-        .setFooter({ text: `Posté <t:${Math.floor(m.createdTimestamp / 1000)}:R> · Lien: ${m.url}` });
-      await interaction.update({ embeds: [embed], components: [] });
-    } catch (e) {
-      await interaction.update({ content: `❌ Impossible de récupérer ce message (${e.message}).`, components: [] });
-    }
+    const value = interaction.values[0];
+    const msgUrl = value.split(':').slice(1).join(':');  // récupère l'URL du message
+    const embed = new EmbedBuilder().setColor(mod.COLORS.source).setTitle('📎 Fichier trouvé')
+      .setDescription(`**Lien vers le message :** [Cliquer ici](${msgUrl})`)
+      .setFooter({ text: 'Les détails complets du fichier se trouvent dans le message' });
+    await interaction.update({ embeds: [embed], components: [] });
     return;
   }
 }
@@ -835,66 +828,61 @@ async function handleModCommand(interaction, guild, g) {
   if (cmd === 'findcodes') {
     const channel = interaction.options.getChannel('salon');
     const rawQuery = interaction.options.getString('recherche');
-    const limite = interaction.options.getInteger('limite') || 300;
+    const limite = interaction.options.getInteger('limite') || 1000;
     const perms = channel.permissionsFor(botMember);
     if (!perms?.has(PermissionFlagsBits.ViewChannel) || !perms?.has(PermissionFlagsBits.ReadMessageHistory)) { await reply(`❌ Je n'ai pas accès à l'historique de ${channel}.`); return; }
+
+    await reply(`🔍 Fouille en cours du salon (jusqu'à ${limite} messages)...`);
 
     const normalize = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     const terms = normalize(rawQuery).split(/\s+/).filter(Boolean);
 
-    // Cherche dans le contenu du message ET les noms de fichiers (pas juste les fichiers joints)
-    let found = [], fetched = 0, lastId;
+    let allFiles = [], fetched = 0, lastId;
     while (fetched < limite) {
       const batch = await channel.messages.fetch({ limit: Math.min(100, limite - fetched), ...(lastId ? { before: lastId } : {}) }).catch(() => null);
       if (!batch || !batch.size) break;
       fetched += batch.size;
       lastId = batch.last().id;
       for (const m of batch.values()) {
-        // Normalise le contenu du message
-        const contentNorm = normalize(m.content || '');
-        const allFileNames = [...m.attachments.values()].map((a) => normalize(a.name || '')).join(' ');
-        // Chaque terme doit apparaître quelque part
-        const contentMatch = terms.every((t) => contentNorm.includes(t));
-        const fileMatch = terms.every((t) => allFileNames.includes(t));
-        if (contentMatch || fileMatch) {
-          found.push(m);
+        for (const a of m.attachments.values()) {
+          const fileName = normalize(a.name || '');
+          if (terms.every((t) => fileName.includes(t))) {
+            allFiles.push({ name: a.name, size: a.size, url: a.url, msgUrl: m.url, author: m.author.tag, createdAt: m.createdTimestamp });
+          }
         }
       }
       if (batch.size < 100) break;
     }
 
-    if (!found.length) { await reply(`🔍 Aucun résultat pour "${rawQuery}" dans ${channel} (${fetched} message(s) fouillé(s)).`); return; }
+    if (!allFiles.length) { await interaction.editReply(`🔍 Aucun fichier nommé "${rawQuery}" dans ${channel} (${fetched} message(s) fouillé(s)).`); return; }
 
-    found.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
-    
-    // Si trop de résultats, utiliser un select menu pour que l'utilisateur choisisse
-    if (found.length > 25) {
-      const grouped = found.slice(0, 25).map((m, i) => {
-        const snippet = m.content ? (m.content.length > 80 ? `${m.content.slice(0, 80)}…` : m.content) : (m.attachments.size ? `📎 ${m.attachments.size} fichier(s)` : '(vide)');
-        return { label: `#${i + 1} — ${m.author.username} — ${snippet}`, value: m.id, description: `<t:${Math.floor(m.createdTimestamp / 1000)}:R>` };
+    allFiles.sort((a, b) => b.createdAt - a.createdAt);
+
+    if (allFiles.length > 25) {
+      const grouped = allFiles.slice(0, 25).map((f, i) => {
+        const sizeStr = (f.size / 1024).toFixed(1);
+        return { label: `${i + 1}. ${f.name.slice(0, 80)}`, value: `${i}:${f.msgUrl}`, description: `${sizeStr} KB · ${f.author}` };
       });
-      const menu = new StringSelectMenuBuilder().setCustomId('findcodes_select').setPlaceholder('Choisir un résultat...')
-        .addOptions(grouped);
+      const menu = new StringSelectMenuBuilder().setCustomId('findcodes_select').setPlaceholder('Choisir un fichier...').addOptions(grouped);
       const row = new ActionRowBuilder().addComponents(menu);
-      const embed = new EmbedBuilder().setColor(mod.COLORS.source).setTitle(`🔍 "${rawQuery}" — ${found.length} résultat(s) dans #${channel.name}`)
-        .setDescription(`Trop de résultats (${found.length}). Choisis un message ci-dessous pour voir plus de détails sur celui-ci (affiche les 25 plus récents).`)
+      const embed = new EmbedBuilder().setColor(mod.COLORS.source).setTitle(`📎 "${rawQuery}" — ${allFiles.length} fichier(s) trouvé(s) dans #${channel.name}`)
+        .setDescription(`Trop de fichiers (${allFiles.length}). Choisis un fichier ci-dessous (25 plus récents affichés).`)
         .setFooter({ text: `${fetched} message(s) fouillé(s)` });
       await interaction.editReply({ embeds: [embed], components: [row] });
       return;
     }
 
-    // Si peu de résultats, affiche tout directement
-    const lines = found.slice(0, 15).map((m) => {
-      const snippet = m.content ? (m.content.length > 150 ? `${m.content.slice(0, 150)}…` : m.content) : (m.attachments.size ? `📎 ${m.attachments.size} fichier(s)` : '(sans texte)');
-      const files = m.attachments.size ? `\n📎 Fichiers: ${[...m.attachments.values()].map((a) => `\`${a.name}\``).join(' ')}` : '';
-      return `[🔗](${m.url}) **${m.author.tag}** — <t:${Math.floor(m.createdTimestamp / 1000)}:R>\n> ${snippet}${files}`;
+    const lines = allFiles.map((f) => {
+      const sizeStr = (f.size / 1024 / 1024 > 1) ? `${(f.size / 1024 / 1024).toFixed(2)} MB` : `${(f.size / 1024).toFixed(1)} KB`;
+      return `[📎 ${f.name}](${f.msgUrl})\n**${sizeStr}** · ${f.author} · <t:${Math.floor(f.createdAt / 1000)}:R>`;
     });
-    const embed = new EmbedBuilder().setColor(mod.COLORS.source).setTitle(`🔍 "${rawQuery}" — ${found.length} résultat(s) dans #${channel.name}`)
+    const embed = new EmbedBuilder().setColor(mod.COLORS.source).setTitle(`📎 "${rawQuery}" — ${allFiles.length} fichier(s) trouvé(s) dans #${channel.name}`)
       .setDescription(lines.join('\n\n').slice(0, 4000))
-      .setFooter({ text: `${fetched} message(s) fouillé(s)${found.length > 15 ? ' · 15 plus récents affichés' : ''}` });
-    await interaction.editReply({ embeds: [embed] });
+      .setFooter({ text: `${fetched} message(s) fouillé(s)` });
+    await interaction.editReply({ embeds: [embed], components: [] });
     return;
   }
+
 
   if (cmd === 'help') {
     await interaction.editReply({ embeds: [buildHelpEmbed('mod', guild)], components: [buildHelpRow('mod')] });
