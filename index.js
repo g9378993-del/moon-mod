@@ -11,6 +11,7 @@ const ai = require('./ai');
 const {
   Client, GatewayIntentBits, Partials, Events, PermissionFlagsBits, ChannelType,
   EmbedBuilder, REST, Routes, SlashCommandBuilder,
+  ActionRowBuilder, StringSelectMenuBuilder,
 } = require('discord.js');
 
 process.on('unhandledRejection', (err) => console.error('Promesse rejetée non gérée :', err));
@@ -271,7 +272,18 @@ const commands = [
       .addIntegerOption((o) => o.setName('seuil').setDescription("Nb d'arrivées déclenchant l'alerte"))
       .addIntegerOption((o) => o.setName('fenetre_secondes').setDescription('Fenêtre en secondes'))
       .addIntegerOption((o) => o.setName('age_min_jours').setDescription('Âge de compte minimum jugé "sûr" (jours)'))
-      .addStringOption((o) => o.setName('action').setDescription('Action sur les comptes suspects').addChoices({ name: 'Timeout 30 min', value: 'timeout' }, { name: 'Kick', value: 'kick' }, { name: 'Alerte seulement', value: 'alert_only' }))),
+      .addStringOption((o) => o.setName('action').setDescription('Action sur les comptes suspects').addChoices({ name: 'Timeout 30 min', value: 'timeout' }, { name: 'Kick', value: 'kick' }, { name: 'Alerte seulement', value: 'alert_only' })))
+    .addSubcommand((s) => s.setName('salonstrict').setDescription('Mode modérateur strict dans UN salon : anti-lien total, anti-fichier, anti-spam et anti-raid renforcés')
+      .addChannelOption((o) => o.setName('salon').setDescription('Le salon à surveiller').setRequired(true))
+      .addStringOption((o) => o.setName('etat').setDescription('on/off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' }))),
+
+  new SlashCommandBuilder().setName('vider').setDescription('Vider complètement un salon (efface TOUT son historique, même au-delà de 14 jours)')
+    .addChannelOption((o) => o.setName('salon').setDescription('Salon à vider (celui-ci par défaut)').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
+
+  new SlashCommandBuilder().setName('findcodes').setDescription('Chercher un texte précis (nom de source/fichier, code...) dans un salon')
+    .addChannelOption((o) => o.setName('salon').setDescription('Salon à fouiller').setRequired(true).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
+    .addStringOption((o) => o.setName('recherche').setDescription('Texte à chercher (ex: nom du fichier/source)').setRequired(true))
+    .addIntegerOption((o) => o.setName('limite').setDescription('Nb de messages récents à fouiller (défaut 300, max 1000)').setMinValue(20).setMaxValue(1000)),
 
   new SlashCommandBuilder().setName('ai').setDescription('Configurer le chat IA du bot')
     .addSubcommand((s) => s.setName('channel-add').setDescription('Le bot répondra à TOUS les messages de ce salon').addChannelOption((o) => o.setName('salon').setDescription('Le salon').setRequired(true)))
@@ -301,6 +313,74 @@ async function registerCommands() {
     await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: [...commands, ...ownerCommands] });
     console.log(`Commandes slash enregistrées en global (${commands.length + ownerCommands.length} commandes).`);
   } catch (err) { console.error('Erreur enregistrement des commandes :', err); }
+}
+
+// ----------------------------------------------------------------
+// /help — court et pratique : un menu déroulant, une catégorie à la fois
+// (au lieu d'un mur de texte avec tout d'un coup).
+// ----------------------------------------------------------------
+const HELP_CATEGORIES = {
+  mod: {
+    label: '🔨 Modération',
+    text: [
+      '`/kick` `/ban` `/unban` — expulser, bannir, débannir',
+      '`/timeout` `/untimeout` — sourdine temporaire, ou lever',
+      '`/warn` `/warnings` `/unwarn` — avertir, consulter, annuler',
+      '`/clear` `/vider` — supprimer des messages, ou tout un salon',
+      '`/slowmode` `/lock` `/unlock` `/lockdown` `/unlockdown`',
+    ].join('\n'),
+  },
+  hist: {
+    label: '📜 Historique',
+    text: '`/case` — détail d\'une sanction précise\n`/modlogs` — historique complet d\'un membre',
+  },
+  config: {
+    label: '⚙️ Configuration',
+    text: [
+      '`/setmodlog` — salon des logs',
+      '`/staffrole` — qui peut modérer',
+      '`/warnactions` — sanctions auto selon le nb d\'avertissements',
+    ].join('\n'),
+  },
+  automod: {
+    label: '🛡️ Automod',
+    text: [
+      '`/automod antilien/antispam/antimention/motsinterdits/grosmots/antiraid`',
+      '`/automod salonstrict` — mode "modérateur strict" dans un salon choisi : bloque tout lien et fichier, spam et raid supprimés automatiquement.',
+    ].join('\n'),
+  },
+  recherche: {
+    label: '🔍 Recherche',
+    text: '`/findcodes` — cherche un texte précis (nom de fichier/source, code...) dans un salon.',
+  },
+  ia: {
+    label: '🤖 IA',
+    text: '`/ask` — poser une question\n`/ai` — réglages (salons, personnalité...)\n💬 Mentionne le bot pour discuter, dans n\'importe quelle langue.',
+  },
+  deobf: {
+    label: '🧩 Déobfuscation',
+    text: '`/deobf` — envoie un script `.lua`/`.luau`, récupère une version lisible.',
+  },
+};
+
+function buildHelpEmbed(key, guild) {
+  const cat = HELP_CATEGORIES[key] || HELP_CATEGORIES.mod;
+  return new EmbedBuilder()
+    .setColor(mod.COLORS.info)
+    .setAuthor({ name: guild.name, iconURL: guild.iconURL() || undefined })
+    .setTitle(`📘 ${cat.label}`)
+    .setDescription(cat.text)
+    .setFooter({ text: 'Choisis une autre catégorie ci-dessous · commandes (staff) = permission requise' });
+}
+function buildHelpRow(selected) {
+  const menu = new StringSelectMenuBuilder().setCustomId('help_select').setPlaceholder('Choisir une catégorie...')
+    .addOptions(Object.entries(HELP_CATEGORIES).map(([value, cat]) => ({ label: cat.label, value, default: value === selected })));
+  return new ActionRowBuilder().addComponents(menu);
+}
+async function routeSelect(interaction) {
+  if (interaction.customId !== 'help_select' || !interaction.guild) return;
+  const key = interaction.values[0];
+  await interaction.update({ embeds: [buildHelpEmbed(key, interaction.guild)], components: [buildHelpRow(key)] });
 }
 
 // ----------------------------------------------------------------
@@ -604,6 +684,18 @@ async function handleModCommand(interaction, guild, g) {
       await reply(`✅ Anti-raid : ${am.antiRaid.enabled ? 'activé' : 'désactivé'} (seuil ${am.antiRaid.joinThreshold}/${am.antiRaid.windowSeconds}s, âge min ${am.antiRaid.minAccountAgeDays}j, action: ${am.antiRaid.action}).`);
       return;
     }
+    if (sub === 'salonstrict') {
+      const channel = interaction.options.getChannel('salon');
+      const on = interaction.options.getString('etat') === 'on';
+      am.strictChannels = am.strictChannels || [];
+      if (on && !am.strictChannels.includes(channel.id)) am.strictChannels.push(channel.id);
+      if (!on) am.strictChannels = am.strictChannels.filter((id) => id !== channel.id);
+      await db.save(guild.id);
+      await reply(on
+        ? `🛡️ Mode modérateur strict **activé** dans ${channel} : tout lien, tout fichier envoyé, le spam et un afflux suspect de messages seront supprimés automatiquement.`
+        : `✅ Mode modérateur strict désactivé dans ${channel}.`);
+      return;
+    }
   }
 
   if (cmd === 'ai') {
@@ -624,57 +716,58 @@ async function handleModCommand(interaction, guild, g) {
     if (sub === 'reset') { ai.resetHistory(interaction.channelId, interaction.user.id); await reply('🧹 Conversation oubliée.'); return; }
   }
 
-  if (cmd === 'help') {
-    const embed = new EmbedBuilder()
-      .setColor(mod.COLORS.info)
-      .setAuthor({ name: guild.name, iconURL: guild.iconURL() || undefined })
-      .setTitle('📘 Guide des commandes')
-      .setDescription("Voici tout ce que je sais faire sur ce serveur, classé par catégorie. Les commandes marquées **(staff)** demandent une permission particulière (Administrateur, Gérer le serveur, ou un rôle autorisé via `/staffrole`).")
-      .setThumbnail(client.user.displayAvatarURL())
-      .addFields(
-        {
-          name: '🔨 Modération (staff)',
-          value: [
-            '`/kick` `/ban` `/unban` — expulser, bannir, débannir un membre',
-            '`/timeout` `/untimeout` — réduire au silence temporairement, ou lever',
-            '`/warn` `/warnings` `/unwarn` — avertir un membre et consulter/annuler ses avertissements',
-            '`/clear` — supprimer plusieurs messages d\'un coup',
-            '`/slowmode` — limiter la fréquence des messages dans un salon',
-            '`/lock` `/unlock` — bloquer/débloquer l\'écriture dans un salon',
-            '`/lockdown` `/unlockdown` — bloquer/débloquer TOUS les salons d\'un coup',
-          ].join('\n'),
-        },
-        {
-          name: '📜 Historique (staff)',
-          value: [
-            '`/case` — voir le détail d\'une sanction précise (son numéro)',
-            '`/modlogs` — voir l\'historique des sanctions d\'un membre',
-          ].join('\n'),
-        },
-        {
-          name: '⚙️ Configuration (staff)',
-          value: [
-            '`/setmodlog` — choisir le salon où sont publiées les sanctions',
-            '`/staffrole` — donner accès aux commandes staff à un rôle',
-            '`/warnactions` — définir ce qui se passe à X avertissements',
-            '`/automod` — régler la modération automatique (liens, spam, insultes...)',
-          ].join('\n'),
-        },
-        {
-          name: '🧩 Déobfuscation (staff)',
-          value: '`/deobf` — envoie un script `.lua`/`.luau` en pièce jointe, le bot te renvoie une version lisible.',
-        },
-        {
-          name: '🤖 Assistant IA — tout le monde',
-          value: [
-            '`/ask` — pose une question directement à l\'IA',
-            '`/ai` — réglages du chat IA (salons autorisés, personnalité...)',
-            '💬 Mentionne le bot ou écris dans un salon IA pour discuter librement, dans **n\'importe quelle langue**',
-          ].join('\n'),
-        },
-      )
-      .setFooter({ text: '💡 Astuce : tape "/" dans Discord pour voir la description complète et les options de chaque commande.' });
+  if (cmd === 'vider') {
+    const channel = interaction.options.getChannel('salon') || interaction.channel;
+    await reply(`🧹 Vidage de ${channel} en cours (clonage + suppression de l'ancien salon)...`);
+    try {
+      const clone = await channel.clone({ reason: `Salon vidé par ${interaction.user.tag}` });
+      await clone.setPosition(channel.rawPosition ?? 0).catch(() => {});
+      await channel.delete(`Salon vidé par ${interaction.user.tag}`).catch(() => {});
+      await clone.send(`🧹 Salon vidé par ${interaction.user}.`).catch(() => {});
+    } catch (e) {
+      await interaction.followUp({ content: `❌ Erreur pendant le vidage (${e.message}).`, ephemeral: true }).catch(() => {});
+    }
+    return;
+  }
+
+  if (cmd === 'findcodes') {
+    const channel = interaction.options.getChannel('salon');
+    const rawQuery = interaction.options.getString('recherche');
+    const query = rawQuery.toLowerCase();
+    const limite = interaction.options.getInteger('limite') || 300;
+    const perms = channel.permissionsFor(botMember);
+    if (!perms?.has(PermissionFlagsBits.ViewChannel) || !perms?.has(PermissionFlagsBits.ReadMessageHistory)) { await reply(`❌ Je n'ai pas accès à l'historique de ${channel}.`); return; }
+
+    let found = [], fetched = 0, lastId;
+    while (fetched < limite) {
+      const batch = await channel.messages.fetch({ limit: Math.min(100, limite - fetched), ...(lastId ? { before: lastId } : {}) }).catch(() => null);
+      if (!batch || !batch.size) break;
+      fetched += batch.size;
+      lastId = batch.last().id;
+      for (const m of batch.values()) {
+        const haystack = [m.content, ...m.embeds.map((e) => `${e.title || ''} ${e.description || ''}`)].join(' ').toLowerCase();
+        if (haystack.includes(query)) found.push(m);
+      }
+      if (batch.size < 100) break;
+    }
+
+    if (!found.length) { await reply(`🔍 Aucun résultat pour "${rawQuery}" dans ${channel} (${fetched} message(s) fouillé(s)).`); return; }
+
+    found.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+    const top = found.slice(0, 15);
+    const lines = top.map((m) => {
+      const snippet = m.content ? (m.content.length > 150 ? `${m.content.slice(0, 150)}…` : m.content) : (m.attachments.size ? `📎 ${m.attachments.size} pièce(s) jointe(s)` : '(sans texte)');
+      return `[🔗](${m.url}) **${m.author.tag}** — <t:${Math.floor(m.createdTimestamp / 1000)}:R>\n> ${snippet}`;
+    });
+    const embed = new EmbedBuilder().setColor(mod.COLORS.source).setTitle(`🔍 "${rawQuery}" — ${found.length} résultat(s) dans #${channel.name}`)
+      .setDescription(lines.join('\n\n').slice(0, 4000))
+      .setFooter({ text: `${fetched} message(s) fouillé(s)${found.length > top.length ? ' · 15 plus récents affichés' : ''}` });
     await interaction.editReply({ embeds: [embed] });
+    return;
+  }
+
+  if (cmd === 'help') {
+    await interaction.editReply({ embeds: [buildHelpEmbed('mod', guild)], components: [buildHelpRow('mod')] });
     return;
   }
 }
@@ -739,13 +832,14 @@ async function routeInteraction(interaction) {
     return;
   }
 
-  await interaction.deferReply({ ephemeral: ['warnings', 'modlogs', 'case', 'staffrole', 'warnactions', 'automod', 'ai', 'help', 'setmodlog'].includes(interaction.commandName) });
+  await interaction.deferReply({ ephemeral: ['warnings', 'modlogs', 'case', 'staffrole', 'warnactions', 'automod', 'ai', 'help', 'setmodlog', 'vider'].includes(interaction.commandName) });
   await handleModCommand(interaction, guild, g);
 }
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     await dbReadyPromise;
+    if (interaction.isStringSelectMenu()) { await routeSelect(interaction); return; }
     await routeInteraction(interaction);
   } catch (err) {
     if (err && err.code === 40060) { dup.count++; dup.lastAt = Date.now(); console.warn('🚨 Une autre copie du bot répond aussi (Termux + Render ?).'); return; }
