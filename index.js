@@ -484,7 +484,8 @@ async function routeSelect(interaction) {
   }
 
   if (interaction.customId.startsWith('findcodes_dl_')) {
-    const [, msgId, index] = interaction.customId.split('_');
+    const parts = interaction.customId.split('_');
+    const msgId = parts[2];
     await interaction.deferReply({ ephemeral: true });
     try {
       const msg = await interaction.channel.messages.fetch(msgId);
