@@ -360,10 +360,24 @@ const ownerCommands = [
 
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+  const body = [...commands, ...ownerCommands];
   try {
-    await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: [...commands, ...ownerCommands] });
-    console.log(`Commandes slash enregistrées en global (${commands.length + ownerCommands.length} commandes).`);
-  } catch (err) { console.error('Erreur enregistrement des commandes :', err); }
+    await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body });
+    console.log(`Commandes slash enregistrées en global (${body.length} commandes). Propagation possible jusqu'à 1h.`);
+  } catch (err) { console.error('Erreur enregistrement des commandes (global) :', err); }
+
+  // En plus du global (qui peut prendre jusqu'à 1h à apparaître), on enregistre
+  // aussi directement sur chaque serveur où le bot est déjà présent : ça, c'est
+  // INSTANTANÉ. Ça garantit que les commandes soient visibles tout de suite,
+  // sans attendre la propagation globale de Discord.
+  for (const guild of client.guilds.cache.values()) {
+    try {
+      await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, guild.id), { body });
+      console.log(`Commandes enregistrées instantanément sur ${guild.name} (${guild.id}).`);
+    } catch (err) {
+      console.error(`Erreur enregistrement des commandes sur ${guild.name} (${guild.id}) :`, err);
+    }
+  }
 }
 
 // ----------------------------------------------------------------
