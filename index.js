@@ -468,10 +468,12 @@ async function routeSelect(interaction) {
 
   if (interaction.customId === 'findcodes_select') {
     const value = interaction.values[0];
-    const [msgId, attIndexStr] = value.split(':');
+    const [msgId, attIndexStr, channelId] = value.split(':');
     await interaction.deferReply({ ephemeral: true });
     try {
-      const msg = await interaction.channel.messages.fetch(msgId);
+      const targetChannel = interaction.guild.channels.cache.get(channelId) || await interaction.guild.channels.fetch(channelId).catch(() => null);
+      if (!targetChannel) { await interaction.editReply(`❌ Salon introuvable (peut-être supprimé).`); return; }
+      const msg = await targetChannel.messages.fetch(msgId);
       const att = [...msg.attachments.values()][parseInt(attIndexStr, 10)];
       if (!att) { await interaction.editReply(`❌ Fichier introuvable dans le message.`); return; }
       const fileData = await (await fetch(att.url)).buffer();
@@ -487,9 +489,12 @@ async function routeSelect(interaction) {
     const parts = interaction.customId.split('_');
     const msgId = parts[2];
     const attIndex = parseInt(parts[3], 10) || 0;
+    const channelId = parts[4];
     await interaction.deferReply({ ephemeral: true });
     try {
-      const msg = await interaction.channel.messages.fetch(msgId);
+      const targetChannel = interaction.guild.channels.cache.get(channelId) || await interaction.guild.channels.fetch(channelId).catch(() => null);
+      if (!targetChannel) { await interaction.editReply(`❌ Salon introuvable (peut-être supprimé).`); return; }
+      const msg = await targetChannel.messages.fetch(msgId);
       const att = [...msg.attachments.values()][attIndex];
       if (!att) { await interaction.editReply(`❌ Fichier introuvable.`); return; }
       const fileData = await (await fetch(att.url)).buffer();
@@ -875,7 +880,7 @@ async function handleModCommand(interaction, guild, g) {
         for (const a of m.attachments.values()) {
           const fileName = normalize(a.name || '');
           if (terms.every((t) => fileName.includes(t))) {
-            allFiles.push({ name: a.name, size: a.size, url: a.url, msgUrl: m.url, author: m.author.tag, createdAt: m.createdTimestamp, msgId: m.id, attIndex });
+            allFiles.push({ name: a.name, size: a.size, url: a.url, msgUrl: m.url, author: m.author.tag, createdAt: m.createdTimestamp, msgId: m.id, attIndex, channelId: channel.id });
           }
           attIndex += 1;
         }
@@ -890,7 +895,7 @@ async function handleModCommand(interaction, guild, g) {
     if (allFiles.length > 25) {
       const grouped = allFiles.slice(0, 25).map((f, i) => {
         const sizeStr = (f.size / 1024).toFixed(1);
-        return { label: `${i + 1}. ${f.name.slice(0, 80)}`, value: `${f.msgId}:${f.attIndex}`, description: `${sizeStr} KB · ${f.author}` };
+        return { label: `${i + 1}. ${f.name.slice(0, 80)}`, value: `${f.msgId}:${f.attIndex}:${f.channelId}`, description: `${sizeStr} KB · ${f.author}` };
       });
       const menu = new StringSelectMenuBuilder().setCustomId('findcodes_select').setPlaceholder('Choisir un fichier à télécharger...').addOptions(grouped);
       const row = new ActionRowBuilder().addComponents(menu);
@@ -912,7 +917,7 @@ async function handleModCommand(interaction, guild, g) {
       .setFooter({ text: `${fetched} message(s) fouillé(s)` });
     
     const buttons = allFiles.slice(0, 5).map((f) =>
-      new ButtonBuilder().setCustomId(`findcodes_dl_${f.msgId}_${f.attIndex}`).setLabel(`📥 ${f.name.slice(0, 20)}`).setStyle(ButtonStyle.Primary)
+      new ButtonBuilder().setCustomId(`findcodes_dl_${f.msgId}_${f.attIndex}_${f.channelId}`).setLabel(`📥 ${f.name.slice(0, 20)}`).setStyle(ButtonStyle.Primary)
     );
     const rows = [];
     for (let i = 0; i < buttons.length; i += 5) {
