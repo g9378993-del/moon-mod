@@ -60,6 +60,17 @@ function needsServerContext(text) {
 // absent, pour que /deobf marche sans configuration manuelle sur Render.
 // Ne bloque jamais le démarrage du bot : en cas d'échec, /deobf le signalera
 // juste proprement au lieu de planter quoi que ce soit.
+function downloadAndDeobf(url, name, extraArgs = []) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'deobf_'));
+  const safeName = name.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const inputPath = path.join(tmpDir, safeName);
+  return fetch(url)
+    .then((r) => r.arrayBuffer())
+    .then((buf) => { fs.writeFileSync(inputPath, Buffer.from(buf)); return runDeobfuscator(inputPath, extraArgs); })
+    .then((result) => ({ ...result, tmpDir, safeName }))
+    .catch((e) => ({ ok: false, error: e.message, tmpDir, safeName }));
+}
+
 async function ensureLuauBinary() {
   const binDir = path.join(DEOBF_DIR, 'bin');
   const luauPath = path.join(binDir, 'luau');
@@ -642,24 +653,14 @@ async function routeInteraction(interaction) {
     await interaction.deferReply();
     const file = interaction.options.getAttachment('fichier');
     if (file.size > 2_000_000) { await interaction.editReply('❌ Fichier trop volumineux (2 Mo max).'); return; }
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'deobf_'));
-    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const inputPath = path.join(tmpDir, safeName);
-    try {
-      const buf = await fetch(file.url).then((r) => r.arrayBuffer());
-      fs.writeFileSync(inputPath, Buffer.from(buf));
-      const fast = interaction.options.getBoolean('rapide');
-      const result = await runDeobfuscator(inputPath, fast ? ['--no-devirt'] : []);
-      if (!result.ok) {
-        await interaction.editReply(`❌ Échec de la déobfuscation :\n\`\`\`\n${result.error.slice(0, 1800)}\n\`\`\``);
-        return;
-      }
-      await interaction.editReply({ content: '✅ Script déobfusqué :', files: [{ attachment: result.outPath, name: `deobf-${safeName.replace(/\.[^.]+$/, '')}.lua` }] });
-    } catch (e) {
-      await interaction.editReply(`❌ Erreur : ${e.message}`);
-    } finally {
-      fs.rm(tmpDir, { recursive: true, force: true }, () => {});
+    const fast = interaction.options.getBoolean('rapide');
+    const result = await downloadAndDeobf(file.url, file.name, fast ? ['--no-devirt'] : []);
+    if (!result.ok) {
+      await interaction.editReply(`❌ Échec de la déobfuscation :\n\`\`\`\n${(result.error || '').slice(0, 1800)}\n\`\`\``);
+    } else {
+      await interaction.editReply({ content: '✅ Script déobfusqué :', files: [{ attachment: result.outPath, name: `deobf-${result.safeName.replace(/\.[^.]+$/, '')}.lua` }] });
     }
+    fs.rm(result.tmpDir, { recursive: true, force: true }, () => {});
     return;
   }
 
@@ -708,6 +709,29 @@ client.on(Events.MessageCreate, async (message) => {
     const mentioned = message.mentions.has(client.user.id);
     const inAiChannel = g.aiChannels.includes(message.channelId);
     if (!inAiChannel && !(mentioned && g.aiEnabled)) return;
+
+    // Fichier .lua/.luau/.txt joint : déobfuscation directe (vrai outil, pas
+    // l'IA — plus fiable pour du bytecode VM obfusqué), staff uniquement.
+    const luaAttachment = [...message.attachments.values()].find((a) => /\.(lua|luau|txt)$/i.test(a.name));
+    if (luaAttachment) {
+      if (!mod.hasModPerms(message.member, g)) {
+        await message.reply({ content: "❌ Seul le staff peut utiliser la déobfuscation.", allowedMentions: { repliedUser: false } });
+        return;
+      }
+      if (luaAttachment.size > 2_000_000) {
+        await message.reply({ content: '❌ Fichier trop volumineux (2 Mo max).', allowedMentions: { repliedUser: false } });
+        return;
+      }
+      await message.channel.sendTyping().catch(() => {});
+      const result = await downloadAndDeobf(luaAttachment.url, luaAttachment.name);
+      if (!result.ok) {
+        await message.reply({ content: `❌ Échec de la déobfuscation :\n\`\`\`\n${(result.error || '').slice(0, 1800)}\n\`\`\``, allowedMentions: { repliedUser: false } });
+      } else {
+        await message.reply({ content: '✅ Script déobfusqué :', files: [{ attachment: result.outPath, name: `deobf-${result.safeName.replace(/\.[^.]+$/, '')}.lua` }], allowedMentions: { repliedUser: false } });
+      }
+      fs.rm(result.tmpDir, { recursive: true, force: true }, () => {});
+      return;
+    }
 
     const text = message.content.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim();
     if (!text) return;
