@@ -136,7 +136,7 @@ function runDeobfuscator(inputPath, extraArgs = []) {
       return;
     }
     const outPath = `${inputPath}.out.lua`;
-    const args = [DEOBF_ENTRY, inputPath, '-o', outPath, '--timeout', String(DEOBF_TIMEOUT_SEC), ...extraArgs];
+    const args = [DEOBF_ENTRY, inputPath, '-o', outPath, '--timeout', String(DEOBF_TIMEOUT_SEC), '--debug', ...extraArgs];
     let proc;
     try {
       proc = spawn('python3', args, { cwd: DEOBF_DIR });
