@@ -110,6 +110,25 @@ const DEOBF_DIR = path.join(__dirname, 'deobf');
 const DEOBF_ENTRY = path.join(DEOBF_DIR, 'deob.py');
 const DEOBF_TIMEOUT_SEC = 60;
 
+// Si le dossier deobf/ n'est pas là mais qu'un deobf.zip traine à la racine
+// (upload web en un seul fichier, plus simple sur mobile qu'un dossier avec
+// sous-dossiers), on l'extrait nous-mêmes au démarrage.
+function ensureDeobfExtracted() {
+  return new Promise((resolve) => {
+    const zipPath = path.join(__dirname, 'deobf.zip');
+    if (fs.existsSync(DEOBF_ENTRY)) { resolve(); return; }
+    if (!fs.existsSync(zipPath)) { resolve(); return; }
+    console.log('[deobf] deobf.zip détecté, extraction...');
+    if (fs.existsSync(DEOBF_DIR)) fs.rmSync(DEOBF_DIR, { recursive: true, force: true }); // dossier cassé d'une tentative précédente
+    const p = spawn('unzip', ['-o', zipPath, '-d', __dirname]);
+    p.on('close', () => {
+      console.log(fs.existsSync(DEOBF_ENTRY) ? '[deobf] Dossier deobf/ extrait avec succès ✅' : "[deobf] Échec de l'extraction de deobf.zip (vérifie que le zip contient bien un dossier deobf/ à sa racine).");
+      resolve();
+    });
+    p.on('error', (e) => { console.error("[deobf] Impossible d'extraire deobf.zip :", e.message); resolve(); });
+  });
+}
+
 function runDeobfuscator(inputPath, extraArgs = []) {
   return new Promise((resolve) => {
     if (!fs.existsSync(DEOBF_ENTRY)) {
@@ -753,7 +772,10 @@ client.on(Events.GuildMemberAdd, async (member) => {
 // surveille son port pour savoir si l'app est vivante, et le tuerait pendant
 // des tentatives MongoDB lentes/échouées sinon (redémarrages en boucle).
 require('./server');
-ensureLuauBinary();
+(async () => {
+  await ensureDeobfExtracted();
+  await ensureLuauBinary();
+})();
 if (!process.env.DISCORD_TOKEN) console.error("❌ DISCORD_TOKEN manquant : ajoute-le dans les variables d'environnement.");
 client.login(process.env.DISCORD_TOKEN).catch((e) => console.error('❌ Connexion Discord impossible :', e.message));
 
