@@ -273,7 +273,7 @@ const commands = [
       .addIntegerOption((o) => o.setName('fenetre_secondes').setDescription('Fenêtre en secondes'))
       .addIntegerOption((o) => o.setName('age_min_jours').setDescription('Âge de compte minimum jugé "sûr" (jours)'))
       .addStringOption((o) => o.setName('action').setDescription('Action sur les comptes suspects').addChoices({ name: 'Timeout 30 min', value: 'timeout' }, { name: 'Kick', value: 'kick' }, { name: 'Alerte seulement', value: 'alert_only' })))
-    .addSubcommand((s) => s.setName('salonstrict').setDescription('Mode modérateur strict dans UN salon : anti-lien total, anti-fichier, anti-spam et anti-raid renforcés')
+    .addSubcommand((s) => s.setName('salonstrict').setDescription('Mode modérateur strict dans UN salon (anti-lien, anti-fichier, anti-spam, anti-raid)')
       .addChannelOption((o) => o.setName('salon').setDescription('Le salon à surveiller').setRequired(true))
       .addStringOption((o) => o.setName('etat').setDescription('on/off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' }))),
 
