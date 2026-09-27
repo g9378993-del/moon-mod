@@ -1,7 +1,10 @@
+# Compile le binaire "luau" (patché) dont /deobf a besoin, directement sur les
+# serveurs de GitHub (gratuit). Résultat téléchargeable dans l'onglet "Actions"
+# une fois terminé, sous "Artifacts" -> luau-linux-binary.
 name: Build luau binary
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch: {}   # bouton "Run workflow" manuel dans l'onglet Actions
   push:
     paths:
       - 'deobf/build_luau.py'
@@ -12,6 +15,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Dézipper deobf.zip (déposé tel quel à la racine du dépôt)
+        run: unzip -o deobf.zip -d .
 
       - name: Installer les outils de compilation
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++
