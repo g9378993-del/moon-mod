@@ -44,12 +44,14 @@ const BASE_SYSTEM_PROMPT = [
   "Si on te demande ton nom ou qui tu es, dis que tu es simplement l'assistant IA de ce serveur Discord. Ne dis JAMAIS que tu es ChatGPT, GPT, OpenAI, Llama, Gemini, ou le produit d'une entreprise en particulier — tu n'as pas de nom de marque à donner.",
   "RÈGLE ABSOLUE : réponds TOUJOURS dans la langue utilisée par la personne dans son dernier message, quelle qu'elle soit (français, anglais, arabe, espagnol...), même si les messages précédents étaient dans une autre langue.",
   'Reste concis (Discord affiche mal les pavés de texte) : quelques phrases suffisent, sauf si on te demande explicitement plus de détails.',
-  "Tu n'es pas un modérateur : si on te demande de bannir/kick/muter quelqu'un, dis que seul le staff peut faire ça avec les commandes du bot (/ban, /kick, /timeout...).",
   "Si un membre cherche un salon, un rôle, ou demande où trouver quelque chose sur le serveur, utilise la liste de salons/rôles fournie plus bas pour l'orienter précisément.",
   "Tu as un outil pour chercher des vidéos YouTube (search_youtube) : utilise-le si on te demande une vidéo ou une musique précise, et donne le lien direct trouvé.",
   "Tu as un outil pour lire le profil d'un membre du serveur (get_member_info) : utilise-le si on te demande des infos sur quelqu'un (rôles, date d'arrivée, etc.), y compris sur la personne qui te parle si elle demande 'et moi ?'.",
   "Tu n'as PAS accès à la recherche web en direct : pour des infos très récentes (actus de dernière minute), dis-le honnêtement au lieu d'inventer.",
 ].join('\n');
+
+const MODERATION_ALLOWED = "Tu as un outil moderate_member (kick/ban/timeout/warn) : la personne qui te parle est membre du staff, donc utilise-le si elle te demande CLAIREMENT et EXPLICITEMENT de sanctionner quelqu'un (ex: 'kick-le', 'ban ce mec pour X', 'timeout 10 minutes'). Trouve d'abord l'ID exact avec get_member_info si tu ne l'as pas déjà. N'utilise JAMAIS cet outil sur une simple mention en passant, une question hypothétique, ou si la cible n'est pas claire — demande une clarification à la place. Confirme toujours dans ta réponse ce que tu as fait (ou pourquoi tu ne l'as pas fait).";
+const MODERATION_DENIED = "Tu n'es pas un modérateur pour la personne qui te parle : si elle te demande de bannir/kick/muter/avertir quelqu'un, dis que seul le staff peut faire ça (avec les commandes du bot ou en te le demandant s'il est staff).";
 
 // ------------------------------------------------------------------
 // OUTILS (functions) — description commune, adaptée au format de chaque fournisseur
@@ -75,6 +77,25 @@ const TOOL_SPECS = [
     },
   },
 ];
+
+const MODERATE_TOOL = {
+  name: 'moderate_member',
+  description: "Effectue une VRAIE action de modération (kick, ban, timeout ou warn) sur un membre du serveur. N'est disponible que quand la personne qui te parle est staff. Utilise-le uniquement sur une demande claire et explicite, jamais sur une simple mention en passant.",
+  parameters: {
+    type: 'object',
+    properties: {
+      action: { type: 'string', enum: ['kick', 'ban', 'timeout', 'warn'], description: "L'action à effectuer." },
+      user_id: { type: 'string', description: "L'ID Discord exact du membre visé (utilise get_member_info avant si tu ne l'as pas)." },
+      reason: { type: 'string', description: 'La raison de la sanction.' },
+      duration: { type: 'string', description: "Durée, uniquement pour 'timeout' (ex: '10m', '2h', '1d')." },
+    },
+    required: ['action', 'user_id', 'reason'],
+  },
+};
+
+function getToolSpecs(canModerate) {
+  return canModerate ? [...TOOL_SPECS, MODERATE_TOOL] : TOOL_SPECS;
+}
 
 async function execSearchYoutube(query) {
   const key = process.env.YOUTUBE_API_KEY;
@@ -119,9 +140,13 @@ async function execGetMemberInfo(query, guild) {
   };
 }
 
-async function runFunctionCall(name, args, guild) {
+async function runFunctionCall(name, args, guild, modExecutor) {
   if (name === 'search_youtube') return execSearchYoutube(args.query);
   if (name === 'get_member_info') return execGetMemberInfo(args.query, guild);
+  if (name === 'moderate_member') {
+    if (!modExecutor) return { error: "Action de modération non autorisée dans ce contexte." };
+    try { return await modExecutor(args); } catch (e) { return { error: e.message }; }
+  }
   return { error: `Fonction inconnue : ${name}` };
 }
 
@@ -129,7 +154,7 @@ async function runFunctionCall(name, args, guild) {
 // FOURNISSEUR 1 : GROQ (format OpenAI)
 // ------------------------------------------------------------------
 
-async function callGroqOnce(apiKey, messages) {
+async function callGroqOnce(apiKey, messages, canModerate) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), CALL_TIMEOUT_MS);
   try {
@@ -139,7 +164,7 @@ async function callGroqOnce(apiKey, messages) {
       body: JSON.stringify({
         model: GROQ_MODEL,
         messages,
-        tools: TOOL_SPECS.map((t) => ({ type: 'function', function: t })),
+        tools: getToolSpecs(canModerate).map((t) => ({ type: 'function', function: t })),
         max_tokens: 500,
       }),
       signal: controller.signal,
@@ -173,12 +198,12 @@ async function withRetry(fn) {
   }
 }
 
-async function tryGroq({ system, historyMsgs, guild }) {
+async function tryGroq({ system, historyMsgs, guild, canModerate, modExecutor }) {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new Error('GROQ_API_KEY non configurée');
 
   let messages = [{ role: 'system', content: system }, ...historyMsgs];
-  let data = await callGroqOnce(apiKey, messages);
+  let data = await callGroqOnce(apiKey, messages, canModerate);
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
     const msg = data.choices?.[0]?.message;
@@ -188,10 +213,10 @@ async function tryGroq({ system, historyMsgs, guild }) {
     for (const c of calls) {
       let args = {};
       try { args = JSON.parse(c.function.arguments || '{}'); } catch { /* args invalides */ }
-      const result = await runFunctionCall(c.function.name, args, guild);
+      const result = await runFunctionCall(c.function.name, args, guild, modExecutor);
       messages.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify(result) });
     }
-    data = await callGroqOnce(apiKey, messages);
+    data = await callGroqOnce(apiKey, messages, canModerate);
   }
 
   return (data.choices?.[0]?.message?.content || '').trim();
@@ -201,7 +226,7 @@ async function tryGroq({ system, historyMsgs, guild }) {
 // FOURNISSEUR 2 : GEMINI (format Google)
 // ------------------------------------------------------------------
 
-async function callGeminiOnce(apiKey, system, contents) {
+async function callGeminiOnce(apiKey, system, contents, canModerate) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), CALL_TIMEOUT_MS);
   try {
@@ -213,7 +238,7 @@ async function callGeminiOnce(apiKey, system, contents) {
         body: JSON.stringify({
           contents,
           systemInstruction: { parts: [{ text: system }] },
-          tools: [{ functionDeclarations: TOOL_SPECS }],
+          tools: [{ functionDeclarations: getToolSpecs(canModerate) }],
           generationConfig: { maxOutputTokens: 500 },
         }),
         signal: controller.signal,
@@ -231,7 +256,7 @@ async function callGeminiOnce(apiKey, system, contents) {
   }
 }
 
-async function tryGemini({ system, historyMsgs, guild }) {
+async function tryGemini({ system, historyMsgs, guild, canModerate, modExecutor }) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error('GEMINI_API_KEY non configurée');
 
@@ -240,7 +265,7 @@ async function tryGemini({ system, historyMsgs, guild }) {
     role: m.role === 'assistant' ? 'model' : 'user',
     parts: [{ text: m.content }],
   }));
-  let data = await callGeminiOnce(apiKey, system, contents);
+  let data = await callGeminiOnce(apiKey, system, contents, canModerate);
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
     const parts = data.candidates?.[0]?.content?.parts || [];
@@ -249,11 +274,11 @@ async function tryGemini({ system, historyMsgs, guild }) {
     contents = [...contents, { role: 'model', parts }];
     const responseParts = [];
     for (const c of calls) {
-      const result = await runFunctionCall(c.functionCall.name, c.functionCall.args || {}, guild);
+      const result = await runFunctionCall(c.functionCall.name, c.functionCall.args || {}, guild, modExecutor);
       responseParts.push({ functionResponse: { name: c.functionCall.name, response: result } });
     }
     contents = [...contents, { role: 'function', parts: responseParts }];
-    data = await callGeminiOnce(apiKey, system, contents);
+    data = await callGeminiOnce(apiKey, system, contents, canModerate);
   }
 
   return (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('\n').trim();
@@ -263,7 +288,7 @@ async function tryGemini({ system, historyMsgs, guild }) {
 
 // Le nom "askClaude" est gardé tel quel pour ne pas avoir à toucher index.js
 // ailleurs (seul ce fichier change), même si ça parle à Groq/Gemini.
-async function askClaude({ channelId, userId, userName, userText, persona, serverContext, speakerInfo, guild }) {
+async function askClaude({ channelId, userId, userName, userText, persona, serverContext, speakerInfo, guild, canModerate, modExecutor }) {
   if (!process.env.GROQ_API_KEY && !process.env.GEMINI_API_KEY) {
     return { error: "Aucune clé IA configurée (GROQ_API_KEY ou GEMINI_API_KEY manquantes)." };
   }
@@ -274,6 +299,7 @@ async function askClaude({ channelId, userId, userName, userText, persona, serve
 
   const system = [
     persona ? `${BASE_SYSTEM_PROMPT}\n\nPersonnalité demandée par le staff : ${persona}` : BASE_SYSTEM_PROMPT,
+    canModerate ? MODERATION_ALLOWED : MODERATION_DENIED,
     speakerInfo ? `\n${speakerInfo}` : '',
     serverContext
       ? `\nVoici la structure de CE serveur Discord (pour orienter les membres et répondre à des questions comme "où est le salon X ?" ou "quel rôle pour Y ?") :\n${serverContext}\nQuand tu mentionnes un salon ou un rôle de cette liste, utilise EXACTEMENT le format <#id> ou <@&id> donné entre parenthèses (ça devient un lien/mention cliquable pour la personne). N'invente jamais un salon ou un rôle qui n'est pas dans cette liste.`
@@ -284,7 +310,7 @@ async function askClaude({ channelId, userId, userName, userText, persona, serve
 
   if (process.env.GROQ_API_KEY) {
     try {
-      const text = await withRetry(() => tryGroq({ system, historyMsgs, guild }));
+      const text = await withRetry(() => tryGroq({ system, historyMsgs, guild, canModerate, modExecutor }));
       if (text) {
         pushHistory(key, 'assistant', text);
         return { text: text.length > MAX_REPLY_CHARS ? `${text.slice(0, MAX_REPLY_CHARS)}…` : text };
@@ -299,7 +325,7 @@ async function askClaude({ channelId, userId, userName, userText, persona, serve
 
   if (process.env.GEMINI_API_KEY) {
     try {
-      const text = await withRetry(() => tryGemini({ system, historyMsgs, guild }));
+      const text = await withRetry(() => tryGemini({ system, historyMsgs, guild, canModerate, modExecutor }));
       if (text) {
         pushHistory(key, 'assistant', text);
         return { text: text.length > MAX_REPLY_CHARS ? `${text.slice(0, MAX_REPLY_CHARS)}…` : text };

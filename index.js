@@ -50,9 +50,60 @@ function buildSpeakerInfo(member) {
   return `La personne qui te parle s'appelle ${member.displayName} (<@${member.id}>) et a le(s) rôle(s) suivant(s) : ${roles.length ? roles.join(', ') : 'aucun rôle particulier'}.`;
 }
 
-// Le contexte complet (salons + rôles) coûte cher en tokens (quotas gratuits
-// serrés) : on ne l'envoie que quand la question semble vraiment en parler,
-// sinon on économise ces tokens sur chaque message.
+// Action de modération réelle, appelée par le chat IA (outil moderate_member)
+// quand un membre du staff lui demande de kick/ban/timeout/warn quelqu'un.
+// Revérifie TOUT côté serveur (permissions, hiérarchie) : ne fait jamais
+// confiance à ce que l'IA a "décidé" — exactement les mêmes garde-fous que
+// les commandes slash /kick /ban /timeout /warn.
+async function executeModAction({ guild, actorMember, action, user_id, reason, duration }) {
+  const g = await db.get(guild.id);
+  if (!mod.hasModPerms(actorMember, g)) return { error: "Tu n'as pas la permission d'effectuer des actions de modération." };
+  if (!user_id) return { error: 'user_id manquant.' };
+  const targetMember = await guild.members.fetch(user_id).catch(() => null);
+  const botMember = guild.members.me;
+  const check = mod.canTarget(actorMember, targetMember, botMember);
+  if (!check.ok) return { error: check.reason };
+  const finalReason = reason || 'Demandé via le chat IA';
+
+  try {
+    if (action === 'kick') {
+      if (!targetMember) return { error: "Cette personne n'est pas sur le serveur." };
+      await targetMember.kick(finalReason);
+      const c = db.addCase(g, { type: 'kick', userId: user_id, moderatorId: actorMember.id, reason: finalReason });
+      await db.save(guild.id);
+      await mod.postToModLog(client, g, mod.caseEmbed(c, guild.name));
+      return { success: true, message: `${targetMember.user.tag} expulsé(e). Cas #${c.id}.` };
+    }
+    if (action === 'ban') {
+      await guild.members.ban(user_id, { reason: finalReason });
+      const c = db.addCase(g, { type: 'ban', userId: user_id, moderatorId: actorMember.id, reason: finalReason });
+      await db.save(guild.id);
+      await mod.postToModLog(client, g, mod.caseEmbed(c, guild.name));
+      return { success: true, message: `Utilisateur (${user_id}) banni. Cas #${c.id}.` };
+    }
+    if (action === 'timeout') {
+      const ms = mod.parseDuration(duration);
+      if (!ms) return { error: "Durée invalide (ex: '10m', '2h', '1d')." };
+      if (!targetMember) return { error: "Cette personne n'est pas sur le serveur." };
+      await targetMember.timeout(ms, finalReason);
+      const c = db.addCase(g, { type: 'timeout', userId: user_id, moderatorId: actorMember.id, reason: finalReason, extra: { ms } });
+      await db.save(guild.id);
+      await mod.postToModLog(client, g, mod.caseEmbed(c, guild.name));
+      return { success: true, message: `${targetMember.user.tag} en sourdine pour ${mod.fmtDuration(ms)}. Cas #${c.id}.` };
+    }
+    if (action === 'warn') {
+      if (!targetMember) return { error: "Cette personne n'est pas sur le serveur." };
+      const c = db.addCase(g, { type: 'warn', userId: user_id, moderatorId: actorMember.id, reason: finalReason });
+      const warnCount = g.cases.filter((x) => x.type === 'warn' && x.userId === user_id).length;
+      await db.save(guild.id);
+      await mod.postToModLog(client, g, mod.caseEmbed(c, guild.name));
+      return { success: true, message: `${targetMember.user.tag} averti(e) (${warnCount} avertissement(s) au total). Cas #${c.id}.` };
+    }
+    return { error: `Action inconnue : ${action}` };
+  } catch (e) {
+    return { error: `Échec (${e.message}).` };
+  }
+}
 function needsServerContext(text) {
   return /\b(salon|canal|channel|rôle|role|permission)s?\b/i.test(text);
 }
@@ -821,7 +872,8 @@ async function routeInteraction(interaction) {
   if (interaction.commandName === 'ask') {
     await interaction.deferReply();
     const question = interaction.options.getString('question');
-    const res = await ai.askClaude({ channelId: interaction.channelId, userId: interaction.user.id, userName: interaction.user.username, userText: question, persona: g.aiPersona, serverContext: needsServerContext(question) ? buildServerContext(guild) : null, speakerInfo: buildSpeakerInfo(interaction.member), guild });
+    const canModerate = mod.hasModPerms(interaction.member, g);
+    const res = await ai.askClaude({ channelId: interaction.channelId, userId: interaction.user.id, userName: interaction.user.username, userText: question, persona: g.aiPersona, serverContext: needsServerContext(question) ? buildServerContext(guild) : null, speakerInfo: buildSpeakerInfo(interaction.member), guild, canModerate, modExecutor: canModerate ? (args) => executeModAction({ guild, actorMember: interaction.member, ...args }) : null });
     await interaction.editReply(res.error ? `❌ ${res.error}` : res.text);
     return;
   }
@@ -891,7 +943,8 @@ client.on(Events.MessageCreate, async (message) => {
     const text = message.content.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim();
     if (!text) return;
     await message.channel.sendTyping().catch(() => {});
-    const res = await ai.askClaude({ channelId: message.channelId, userId: message.author.id, userName: message.author.username, userText: text, persona: g.aiPersona, serverContext: needsServerContext(text) ? buildServerContext(message.guild) : null, speakerInfo: buildSpeakerInfo(message.member), guild: message.guild });
+    const canModerate = mod.hasModPerms(message.member, g);
+    const res = await ai.askClaude({ channelId: message.channelId, userId: message.author.id, userName: message.author.username, userText: text, persona: g.aiPersona, serverContext: needsServerContext(text) ? buildServerContext(message.guild) : null, speakerInfo: buildSpeakerInfo(message.member), guild: message.guild, canModerate, modExecutor: canModerate ? (args) => executeModAction({ guild: message.guild, actorMember: message.member, ...args }) : null });
     const out = res.error ? `❌ ${res.error}` : res.text;
     await message.reply({ content: out, allowedMentions: { repliedUser: false } });
   } catch (e) { console.error('Erreur MessageCreate :', e); }
