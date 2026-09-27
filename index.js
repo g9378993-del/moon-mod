@@ -11,7 +11,7 @@ const ai = require('./ai');
 const {
   Client, GatewayIntentBits, Partials, Events, PermissionFlagsBits, ChannelType,
   EmbedBuilder, REST, Routes, SlashCommandBuilder,
-  ActionRowBuilder, StringSelectMenuBuilder,
+  ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle,
 } = require('discord.js');
 
 process.on('unhandledRejection', (err) => console.error('Promesse rejetée non gérée :', err));
@@ -468,14 +468,39 @@ async function routeSelect(interaction) {
 
   if (interaction.customId === 'findcodes_select') {
     const value = interaction.values[0];
-    const msgUrl = value.split(':').slice(1).join(':');  // récupère l'URL du message
-    const embed = new EmbedBuilder().setColor(mod.COLORS.source).setTitle('📎 Fichier trouvé')
-      .setDescription(`**Lien vers le message :** [Cliquer ici](${msgUrl})`)
-      .setFooter({ text: 'Les détails complets du fichier se trouvent dans le message' });
-    await interaction.update({ embeds: [embed], components: [] });
+    const [msgId, fileName] = value.split(':');
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const msg = await interaction.channel.messages.fetch(msgId);
+      const att = msg.attachments.find((a) => a.name === fileName);
+      if (!att) { await interaction.editReply(`❌ Fichier introuvable dans le message.`); return; }
+      const fileData = await (await fetch(att.url)).buffer();
+      const attachment = { file: fileData, name: att.name };
+      await interaction.editReply({ content: `📥 **${att.name}** (${(att.size / 1024).toFixed(1)} KB)`, files: [attachment] });
+    } catch (e) {
+      await interaction.editReply(`❌ Erreur lors du téléchargement (${e.message}).`);
+    }
+    return;
+  }
+
+  if (interaction.customId.startsWith('findcodes_dl_')) {
+    const [, msgId, index] = interaction.customId.split('_');
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const msg = await interaction.channel.messages.fetch(msgId);
+      const att = [...msg.attachments.values()][0];  // 1er fichier du message
+      if (!att) { await interaction.editReply(`❌ Fichier introuvable.`); return; }
+      const fileData = await (await fetch(att.url)).buffer();
+      if (fileData.length > 25 * 1024 * 1024) { await interaction.editReply(`❌ Fichier trop volumineux (${(fileData.length / 1024 / 1024).toFixed(1)} MB, max 25 MB).`); return; }
+      const attachment = { file: fileData, name: att.name };
+      await interaction.editReply({ content: `📥 **${att.name}** (${(att.size / 1024).toFixed(1)} KB)`, files: [attachment] });
+    } catch (e) {
+      await interaction.editReply(`❌ Erreur (${e.message}).`);
+    }
     return;
   }
 }
+
 
 
 // ----------------------------------------------------------------
@@ -828,11 +853,11 @@ async function handleModCommand(interaction, guild, g) {
   if (cmd === 'findcodes') {
     const channel = interaction.options.getChannel('salon');
     const rawQuery = interaction.options.getString('recherche');
-    const limite = interaction.options.getInteger('limite') || 1000;
+    const limite = interaction.options.getInteger('limite') || 10000;  // très haut pour fouiller le salon entier
     const perms = channel.permissionsFor(botMember);
     if (!perms?.has(PermissionFlagsBits.ViewChannel) || !perms?.has(PermissionFlagsBits.ReadMessageHistory)) { await reply(`❌ Je n'ai pas accès à l'historique de ${channel}.`); return; }
 
-    await reply(`🔍 Fouille en cours du salon (jusqu'à ${limite} messages)...`);
+    await reply(`🔍 Fouille du salon entier en cours...`);
 
     const normalize = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     const terms = normalize(rawQuery).split(/\s+/).filter(Boolean);
@@ -847,11 +872,11 @@ async function handleModCommand(interaction, guild, g) {
         for (const a of m.attachments.values()) {
           const fileName = normalize(a.name || '');
           if (terms.every((t) => fileName.includes(t))) {
-            allFiles.push({ name: a.name, size: a.size, url: a.url, msgUrl: m.url, author: m.author.tag, createdAt: m.createdTimestamp });
+            allFiles.push({ name: a.name, size: a.size, url: a.url, msgUrl: m.url, author: m.author.tag, createdAt: m.createdTimestamp, msgId: m.id });
           }
         }
       }
-      if (batch.size < 100) break;
+      if (batch.size < 100) break;  // fin du salon atteinte
     }
 
     if (!allFiles.length) { await interaction.editReply(`🔍 Aucun fichier nommé "${rawQuery}" dans ${channel} (${fetched} message(s) fouillé(s)).`); return; }
@@ -861,29 +886,38 @@ async function handleModCommand(interaction, guild, g) {
     if (allFiles.length > 25) {
       const grouped = allFiles.slice(0, 25).map((f, i) => {
         const sizeStr = (f.size / 1024).toFixed(1);
-        return { label: `${i + 1}. ${f.name.slice(0, 80)}`, value: `${i}:${f.msgUrl}`, description: `${sizeStr} KB · ${f.author}` };
+        return { label: `${i + 1}. ${f.name.slice(0, 80)}`, value: `${f.msgId}:${f.name}:${i}`, description: `${sizeStr} KB · ${f.author}` };
       });
-      const menu = new StringSelectMenuBuilder().setCustomId('findcodes_select').setPlaceholder('Choisir un fichier...').addOptions(grouped);
+      const menu = new StringSelectMenuBuilder().setCustomId('findcodes_select').setPlaceholder('Choisir un fichier à télécharger...').addOptions(grouped);
       const row = new ActionRowBuilder().addComponents(menu);
-      const embed = new EmbedBuilder().setColor(mod.COLORS.source).setTitle(`📎 "${rawQuery}" — ${allFiles.length} fichier(s) trouvé(s) dans #${channel.name}`)
-        .setDescription(`Trop de fichiers (${allFiles.length}). Choisis un fichier ci-dessous (25 plus récents affichés).`)
-        .setFooter({ text: `${fetched} message(s) fouillé(s)` });
+      const embed = new EmbedBuilder().setColor(mod.COLORS.source)
+        .setTitle(`📎 "${rawQuery}" — ${allFiles.length} fichier(s) trouvé(s) dans #${channel.name}`)
+        .setDescription(`Trop de fichiers (${allFiles.length}). Choisis un fichier ci-dessous pour le télécharger (25 plus récents affichés).`)
+        .setFooter({ text: `${fetched} message(s) fouillé(s) · total: ${allFiles.length} fichier(s)` });
       await interaction.editReply({ embeds: [embed], components: [row] });
       return;
     }
 
     const lines = allFiles.map((f) => {
       const sizeStr = (f.size / 1024 / 1024 > 1) ? `${(f.size / 1024 / 1024).toFixed(2)} MB` : `${(f.size / 1024).toFixed(1)} KB`;
-      return `[📎 ${f.name}](${f.msgUrl})\n**${sizeStr}** · ${f.author} · <t:${Math.floor(f.createdAt / 1000)}:R>`;
+      return `**${f.name}** — ${sizeStr} · ${f.author} · <t:${Math.floor(f.createdAt / 1000)}:R>`;
     });
-    const embed = new EmbedBuilder().setColor(mod.COLORS.source).setTitle(`📎 "${rawQuery}" — ${allFiles.length} fichier(s) trouvé(s) dans #${channel.name}`)
-      .setDescription(lines.join('\n\n').slice(0, 4000))
+    const embed = new EmbedBuilder().setColor(mod.COLORS.source)
+      .setTitle(`📎 "${rawQuery}" — ${allFiles.length} fichier(s) trouvé(s) dans #${channel.name}`)
+      .setDescription(`Les fichiers ci-dessous sont prêts à être téléchargés. Clique sur le nom d'un fichier pour l'obtenir.\n\n${lines.join('\n').slice(0, 4000)}`)
       .setFooter({ text: `${fetched} message(s) fouillé(s)` });
-    await interaction.editReply({ embeds: [embed], components: [] });
+    
+    const buttons = allFiles.slice(0, 5).map((f, i) => 
+      new ButtonBuilder().setCustomId(`findcodes_dl_${f.msgId}_${i}`).setLabel(`📥 ${f.name.slice(0, 20)}`).setStyle(ButtonStyle.Primary)
+    );
+    const rows = [];
+    for (let i = 0; i < buttons.length; i += 5) {
+      rows.push(new ActionRowBuilder().addComponents(buttons.slice(i, i + 5)));
+    }
+    
+    await interaction.editReply({ embeds: [embed], components: rows });
     return;
   }
-
-
   if (cmd === 'help') {
     await interaction.editReply({ embeds: [buildHelpEmbed('mod', guild)], components: [buildHelpRow('mod')] });
     return;
@@ -958,7 +992,7 @@ async function routeInteraction(interaction) {
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     await dbReadyPromise;
-    if (interaction.isStringSelectMenu()) { await routeSelect(interaction); return; }
+    if (interaction.isStringSelectMenu() || interaction.isButton()) { await routeSelect(interaction); return; }
     await routeInteraction(interaction);
   } catch (err) {
     if (err && err.code === 40060) { dup.count++; dup.lastAt = Date.now(); console.warn('🚨 Une autre copie du bot répond aussi (Termux + Render ?).'); return; }
