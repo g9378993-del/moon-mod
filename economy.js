@@ -20,7 +20,6 @@ const RED = 0xFF0000;
 const COIN = '💰';
 const NO_PERM = "❌ Tu n'as pas la permission d'utiliser cette commande (Administrateur, Gérer le serveur, ou un rôle autorisé via `/staffrole`).";
 const MAX_AMOUNT = 1_000_000_000;
-const MSG_COOLDOWN_MS = 5000; // anti-spam : 1 message compté max toutes les 5 s par membre
 
 // ----------------------------------------------------------------
 // DONNÉES
@@ -91,18 +90,12 @@ function scheduleSave(guildId, delay = 20000) {
 // ----------------------------------------------------------------
 // GAIN PAR MESSAGES
 // ----------------------------------------------------------------
-const lastCounted = new Map(); // guildId:userId -> timestamp
 function onMessage(message) {
   try {
     if (!message.guild || message.author.bot) return;
     const g = db.get(message.guild.id);
     const e = eco(g); const c = e.config;
     if (!c.msgChannelId || message.channelId !== c.msgChannelId) return;
-
-    const key = `${message.guild.id}:${message.author.id}`;
-    const now = Date.now();
-    if (now - (lastCounted.get(key) || 0) < MSG_COOLDOWN_MS) return;
-    lastCounted.set(key, now);
 
     const u = getUser(e, message.author.id);
     roll(u, dayKey(c.timezone));
