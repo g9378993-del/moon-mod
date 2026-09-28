@@ -6,8 +6,11 @@ const os = require('os');
 const { spawn } = require('child_process');
 const db = require('./db');
 const mod = require('./moderation');
+// Toutes les couleurs des embeds du bot en rouge (on mute les valeurs de l'objet COLORS partagé avec moderation.js).
+if (mod.COLORS) { for (const k of Object.keys(mod.COLORS)) mod.COLORS[k] = 0xFF0000; }
 const automod = require('./automod');
 const ai = require('./ai');
+const economy = require('./economy');
 const {
   Client, GatewayIntentBits, Partials, Events, PermissionFlagsBits, ChannelType,
   EmbedBuilder, REST, Routes, SlashCommandBuilder, AttachmentBuilder,
@@ -253,6 +256,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildModeration,
+    GatewayIntentBits.GuildVoiceStates, // nécessaire pour le gain de pièces en vocal
   ],
   partials: [Partials.Channel, Partials.GuildMember, Partials.Message],
 });
@@ -382,6 +386,8 @@ const commands = [
   new SlashCommandBuilder().setName('help').setDescription('Voir toutes les commandes'),
 ].map((c) => c.setDMPermission(false).toJSON());
 
+commands.push(...economy.commands);
+
 const ownerCommands = [
   new SlashCommandBuilder().setName('diag').setDescription('(Toi uniquement) État du bot : stockage, doublons, serveurs'),
 ].map((c) => c.toJSON());
@@ -465,6 +471,17 @@ const HELP_CATEGORIES = {
     label: '🤖 IA',
     text: '`/ask` — poser une question\n`/ai` — réglages (salons, personnalité...)\n💬 Mentionne le bot pour discuter, dans n\'importe quelle langue.',
   },
+  eco: {
+    label: '💰 Économie',
+    text: [
+      '`/panelcoins` — poste le panel (Coins, Messages, Voice Time, Leaderboard, Shop, Transfer...).',
+      '`/ecoconfig messages` `vocal` `off` — règles de gain (salon, nombre, pièces, limite par jour).',
+      '`/ecoconfig panel` `fuseau` `logs` `voir` — textes du panel, reset quotidien, logs, config.',
+      '`/ecoadmin add` `remove` `set` `reset` — modifier les pièces d\'un membre.',
+      '`/shop add` `edit` `remove` `list` — gérer le shop (rôle auto, stock...).',
+      '`/coins` — voir son solde.',
+    ].join('\n'),
+  },
   deobf: {
     label: '🧩 Déobfuscation',
     text: '`/deobf` — envoie un script `.lua`/`.luau`, récupère une version lisible.',
@@ -546,6 +563,7 @@ client.once(Events.ClientReady, async () => {
   await dbReadyPromise;
   console.log(`Serveurs actuels (${client.guilds.cache.size}) :`, [...client.guilds.cache.values()].map((g) => `${g.name} (${g.id})`).join(' | '));
   await registerCommands();
+  economy.startVoiceTracking(client);
   const st = db.getStatus();
   if (!st.persistent && process.env.OWNER_ID) {
     try {
@@ -1005,6 +1023,8 @@ async function routeInteraction(interaction) {
     return;
   }
 
+  if (economy.isEconomyCommand(interaction.commandName)) { await economy.handleCommand(interaction); return; }
+
   if (interaction.commandName === 'ask') {
     await interaction.deferReply();
     const question = interaction.options.getString('question');
@@ -1027,6 +1047,8 @@ async function routeInteraction(interaction) {
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     await dbReadyPromise;
+    if (interaction.isAutocomplete()) { await economy.autocomplete(interaction); return; }
+    if (interaction.customId && interaction.customId.startsWith('eco:')) { await economy.handleComponent(interaction); return; }
     if (interaction.isStringSelectMenu() || interaction.isButton()) { await routeSelect(interaction); return; }
     await routeInteraction(interaction);
   } catch (err) {
@@ -1047,6 +1069,8 @@ client.on(Events.MessageCreate, async (message) => {
 
     const handled = await automod.checkMessage(message);
     if (handled) return;
+
+    economy.onMessage(message); // gain de pièces (salon choisi via /ecoconfig messages)
 
     const g = db.get(message.guild.id);
     const mentioned = message.mentions.has(client.user.id);
