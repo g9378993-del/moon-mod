@@ -104,7 +104,19 @@ function onMessage(message) {
     const capped = c.msgMaxPerDay > 0 && u.msgRewards >= c.msgMaxPerDay;
     if (!capped && c.msgEvery > 0 && c.msgReward > 0 && u.msgToday % c.msgEvery === 0) {
       u.coins += c.msgReward; u.earned += c.msgReward; u.msgRewards++;
-      message.react(COIN).catch(() => {}); // petit retour discret : 💰 sur le message qui a rapporté les pièces
+      message.react(COIN).catch(() => {}); // 💰 sur le message qui a rapporté les pièces
+
+      // Message du bot (en anglais) pour annoncer la récompense.
+      const done = c.msgMaxPerDay > 0 && u.msgRewards >= c.msgMaxPerDay;
+      const lines = [
+        `You sent **${c.msgEvery}** messages and earned **${fmt(c.msgReward)}** ${COIN}!`,
+        `Your balance: **${fmt(u.coins)}** ${COIN}`,
+      ];
+      if (c.msgMaxPerDay > 0) lines.push(done ? `✅ You've got your daily reward — come back tomorrow for more!` : `Daily rewards: **${u.msgRewards}/${c.msgMaxPerDay}** — keep chatting to earn more today!`);
+      message.reply({
+        embeds: [new EmbedBuilder().setColor(RED).setTitle('🎉 Reward earned!').setDescription(lines.join('\n'))],
+        allowedMentions: { repliedUser: false },
+      }).catch(() => {});
     }
     scheduleSave(message.guild.id);
   } catch (err) { console.error('Erreur économie (message) :', err); }
