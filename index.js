@@ -10,7 +10,7 @@ const automod = require('./automod');
 const ai = require('./ai');
 const {
   Client, GatewayIntentBits, Partials, Events, PermissionFlagsBits, ChannelType,
-  EmbedBuilder, REST, Routes, SlashCommandBuilder,
+  EmbedBuilder, REST, Routes, SlashCommandBuilder, AttachmentBuilder,
   ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle,
 } = require('discord.js');
 
@@ -160,7 +160,8 @@ async function ensureLuauBinary() {
 // ----------------------------------------------------------------
 const DEOBF_DIR = path.join(__dirname, 'deobf');
 const DEOBF_ENTRY = path.join(DEOBF_DIR, 'deob.py');
-const DEOBF_TIMEOUT_SEC = 90;
+const DEOBF_TIMEOUT_SEC = 120;   // par exécution du tracer (Luraph v15 : une passe de dévirtualisation peut dépasser 80 s)
+const DEOBF_TOTAL_SEC = 600;     // limite globale avant d'abandonner (l'interaction Discord tient 15 min)
 
 // Si le dossier deobf/ n'est pas là mais qu'un deobf.zip traine à la racine
 // (upload web en un seul fichier, plus simple sur mobile qu'un dossier avec
@@ -196,15 +197,20 @@ function runDeobfuscator(inputPath, extraArgs = []) {
       resolve({ ok: false, error: `Impossible de lancer python3 : ${e.message}` });
       return;
     }
-    const killer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch (e) { /* déjà terminé */ } }, (DEOBF_TIMEOUT_SEC + 20) * 1000);
+    let timedOut = false;
+    const killer = setTimeout(() => { timedOut = true; try { proc.kill('SIGKILL'); } catch (e) { /* déjà terminé */ } }, DEOBF_TOTAL_SEC * 1000);
     let stderr = '';
     proc.stderr.on('data', (d) => { stderr += d.toString(); });
     proc.on('error', (e) => { clearTimeout(killer); resolve({ ok: false, error: `python3 introuvable ou erreur de lancement : ${e.message}` }); });
     proc.on('close', (code) => {
       clearTimeout(killer);
       if (code === 0 && fs.existsSync(outPath)) { resolve({ ok: true, outPath }); return; }
+      // L'outil écrit déjà un résultat intermédiaire avant la dévirtualisation :
+      // mieux vaut le renvoyer (marqué partiel) qu'un simple échec.
+      if (fs.existsSync(outPath)) { resolve({ ok: true, partial: true, outPath }); return; }
       const tail = stderr.trim().split('\n').filter(Boolean).slice(-8).join('\n');
-      resolve({ ok: false, error: tail || `Échec (code de sortie ${code}).` });
+      const reason = timedOut ? `Temps maximum dépassé (${DEOBF_TOTAL_SEC}s).` : `Échec (code de sortie ${code}).`;
+      resolve({ ok: false, error: tail ? `${reason}\n${tail}` : reason });
     });
   });
 }
@@ -477,7 +483,7 @@ async function routeSelect(interaction) {
       const att = [...msg.attachments.values()][parseInt(attIndexStr, 10)];
       if (!att) { await interaction.editReply(`❌ Fichier introuvable dans le message.`); return; }
       const fileData = Buffer.from(await (await fetch(att.url)).arrayBuffer());
-      const attachment = { file: fileData, name: att.name };
+      const attachment = new AttachmentBuilder(fileData, { name: att.name });
       await interaction.editReply({ content: `📥 **${att.name}** (${(att.size / 1024).toFixed(1)} KB)`, files: [attachment] });
     } catch (e) {
       await interaction.editReply(`❌ Erreur lors du téléchargement (${e.message}).`);
@@ -499,7 +505,7 @@ async function routeSelect(interaction) {
       if (!att) { await interaction.editReply(`❌ Fichier introuvable.`); return; }
       const fileData = Buffer.from(await (await fetch(att.url)).arrayBuffer());
       if (fileData.length > 25 * 1024 * 1024) { await interaction.editReply(`❌ Fichier trop volumineux (${(fileData.length / 1024 / 1024).toFixed(1)} MB, max 25 MB).`); return; }
-      const attachment = { file: fileData, name: att.name };
+      const attachment = new AttachmentBuilder(fileData, { name: att.name });
       await interaction.editReply({ content: `📥 **${att.name}** (${(att.size / 1024).toFixed(1)} KB)`, files: [attachment] });
     } catch (e) {
       await interaction.editReply(`❌ Erreur (${e.message}).`);
@@ -973,7 +979,7 @@ async function routeInteraction(interaction) {
     if (!result.ok) {
       await interaction.editReply(`❌ Échec de la déobfuscation :\n\`\`\`\n${(result.error || '').slice(0, 1800)}\n\`\`\``);
     } else {
-      await interaction.editReply({ content: '✅ Script déobfusqué :', files: [{ attachment: result.outPath, name: `deobf-${result.safeName.replace(/\.[^.]+$/, '')}.lua` }] });
+      await interaction.editReply({ content: result.partial ? '⚠️ Résultat partiel (temps dépassé avant la fin de la dévirtualisation) :' : '✅ Script déobfusqué :', files: [{ attachment: result.outPath, name: `deobf-${result.safeName.replace(/\.[^.]+$/, '')}.lua` }] });
     }
     fs.rm(result.tmpDir, { recursive: true, force: true }, () => {});
     return;
@@ -1040,11 +1046,13 @@ client.on(Events.MessageCreate, async (message) => {
         return;
       }
       await message.channel.sendTyping().catch(() => {});
-      const result = await downloadAndDeobf(luaAttachment.url, luaAttachment.name);
+      const typingTimer = setInterval(() => { message.channel.sendTyping().catch(() => {}); }, 8000);
+      let result;
+      try { result = await downloadAndDeobf(luaAttachment.url, luaAttachment.name); } finally { clearInterval(typingTimer); }
       if (!result.ok) {
         await message.reply({ content: `❌ Échec de la déobfuscation :\n\`\`\`\n${(result.error || '').slice(0, 1800)}\n\`\`\``, allowedMentions: { repliedUser: false } });
       } else {
-        await message.reply({ content: '✅ Script déobfusqué :', files: [{ attachment: result.outPath, name: `deobf-${result.safeName.replace(/\.[^.]+$/, '')}.lua` }], allowedMentions: { repliedUser: false } });
+        await message.reply({ content: result.partial ? '⚠️ Résultat partiel (temps dépassé avant la fin de la dévirtualisation) :' : '✅ Script déobfusqué :', files: [{ attachment: result.outPath, name: `deobf-${result.safeName.replace(/\.[^.]+$/, '')}.lua` }], allowedMentions: { repliedUser: false } });
       }
       fs.rm(result.tmpDir, { recursive: true, force: true }, () => {});
       return;
