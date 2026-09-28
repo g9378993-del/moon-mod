@@ -14,7 +14,7 @@ const {
   SlashCommandBuilder, ChannelType,
 } = require('discord.js');
 const db = require('./db');
-const mod = require('./moderation');
+const perms = require('./perms');
 
 const RED = 0xFF0000;
 const COIN = '💰';
@@ -246,7 +246,7 @@ async function handleComponent(interaction) {
   const g = db.get(guild.id);
   const e = eco(g); const c = e.config;
   const id = interaction.customId;
-  const staff = mod.hasModPerms(interaction.member, g);
+  const staff = perms.canUseCommand(interaction.member, g, 'ecoadmin'); // boutons Add/Remove Coins
   const eph = (payload) => interaction.reply({ ephemeral: true, allowedMentions: { parse: [] }, ...(typeof payload === 'string' ? { content: payload } : payload) });
 
   // ---------- Boutons du panel ----------
@@ -471,7 +471,7 @@ async function handleCommand(interaction) {
   const e = eco(g); const c = e.config;
   const name = interaction.commandName;
   const sub = interaction.options.getSubcommand(false);
-  const staff = mod.hasModPerms(interaction.member, g);
+  const staff = perms.canUseCommand(interaction.member, g, name);
   const isPublic = name === 'coins' || (name === 'shop' && sub === 'list');
   if (!isPublic && !staff) { await interaction.reply({ content: NO_PERM, ephemeral: true }); return; }
   await interaction.deferReply({ ephemeral: true });

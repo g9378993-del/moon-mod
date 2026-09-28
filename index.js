@@ -11,6 +11,7 @@ if (mod.COLORS) { for (const k of Object.keys(mod.COLORS)) mod.COLORS[k] = 0xFF0
 const automod = require('./automod');
 const ai = require('./ai');
 const economy = require('./economy');
+const perms = require('./perms');
 const {
   Client, GatewayIntentBits, Partials, Events, PermissionFlagsBits, ChannelType,
   EmbedBuilder, REST, Routes, SlashCommandBuilder, AttachmentBuilder,
@@ -60,7 +61,7 @@ function buildSpeakerInfo(member) {
 // les commandes slash /kick /ban /timeout /warn.
 async function executeModAction({ guild, actorMember, action, user_id, reason, duration }) {
   const g = await db.get(guild.id);
-  if (!mod.hasModPerms(actorMember, g)) return { error: "Tu n'as pas la permission d'effectuer des actions de modération." };
+  if (!perms.hasStaff(actorMember, g)) return { error: "Tu n'as pas la permission d'effectuer des actions de modération." };
   if (!user_id) return { error: 'user_id manquant.' };
   const targetMember = await guild.members.fetch(user_id).catch(() => null);
   const botMember = guild.members.me;
@@ -322,11 +323,6 @@ const commands = [
   new SlashCommandBuilder().setName('setmodlog').setDescription('Définir le salon des logs de modération')
     .addChannelOption((o) => o.setName('salon').setDescription('Le salon').setRequired(true).addChannelTypes(ChannelType.GuildText)),
 
-  new SlashCommandBuilder().setName('staffrole').setDescription('Gérer qui peut utiliser les commandes de modération')
-    .addSubcommand((s) => s.setName('add').setDescription('Autoriser un rôle').addRoleOption((o) => o.setName('role').setDescription('Le rôle').setRequired(true)))
-    .addSubcommand((s) => s.setName('remove').setDescription('Retirer un rôle').addRoleOption((o) => o.setName('role').setDescription('Le rôle').setRequired(true)))
-    .addSubcommand((s) => s.setName('list').setDescription('Voir la liste')),
-
   new SlashCommandBuilder().setName('warnactions').setDescription('Configurer les sanctions automatiques selon le nombre d\'avertissements')
     .addSubcommand((s) => s.setName('list').setDescription('Voir les paliers configurés'))
     .addSubcommand((s) => s.setName('set').setDescription('Définir un palier')
@@ -386,7 +382,8 @@ const commands = [
   new SlashCommandBuilder().setName('help').setDescription('Voir toutes les commandes'),
 ].map((c) => c.setDMPermission(false).toJSON());
 
-commands.push(...economy.commands);
+commands.push(...economy.commands, ...perms.commands);
+perms.setCommandNames(commands.map((c) => c.name));
 
 const ownerCommands = [
   new SlashCommandBuilder().setName('diag').setDescription('(Toi uniquement) État du bot : stockage, doublons, serveurs'),
@@ -452,7 +449,7 @@ const HELP_CATEGORIES = {
     label: '⚙️ Configuration',
     text: [
       '`/setmodlog` — salon des logs',
-      '`/staffrole` — qui peut modérer',
+      '`/staffrole` `/permuser` — choisir qui (rôle / membre) peut utiliser quelles commandes (vide = toutes).',
       '`/warnactions` — sanctions auto selon le nb d\'avertissements',
     ].join('\n'),
   },
@@ -665,7 +662,7 @@ async function handleModCommand(interaction, guild, g) {
 
   if (cmd === 'warnings' || cmd === 'modlogs') {
     const target = interaction.options.getUser('membre') || interaction.user;
-    if (cmd === 'warnings' && target.id !== interaction.user.id && !mod.hasModPerms(interaction.member, g)) {
+    if (cmd === 'warnings' && target.id !== interaction.user.id && !perms.hasStaff(interaction.member, g)) {
       await reply("❌ Tu ne peux voir que tes propres avertissements."); return;
     }
     const cases = g.cases.filter((c) => c.userId === target.id && (cmd === 'modlogs' || c.type === 'warn'));
@@ -766,25 +763,6 @@ async function handleModCommand(interaction, guild, g) {
     g.modLogChannelId = interaction.options.getChannel('salon').id;
     await db.save(guild.id);
     await reply(`✅ Salon de logs réglé sur <#${g.modLogChannelId}>.`);
-    return;
-  }
-
-  if (cmd === 'staffrole') {
-    const sub = interaction.options.getSubcommand();
-    if (sub === 'add') {
-      const role = interaction.options.getRole('role');
-      if (role.id === guild.id) { await reply('❌ Impossible avec @everyone.'); return; }
-      if (!g.staffRoles.includes(role.id)) g.staffRoles.push(role.id);
-      await db.save(guild.id);
-      await reply(`✅ <@&${role.id}> peut maintenant modérer.`);
-    } else if (sub === 'remove') {
-      const role = interaction.options.getRole('role');
-      g.staffRoles = g.staffRoles.filter((r) => r !== role.id);
-      await db.save(guild.id);
-      await reply(`✅ <@&${role.id}> ne peut plus modérer.`);
-    } else {
-      await reply(`🎭 Rôles autorisés : ${g.staffRoles.map((r) => `<@&${r}>`).join(' ') || 'aucun (Administrateur/Gérer le serveur uniquement)'}`);
-    }
     return;
   }
 
@@ -1004,8 +982,10 @@ async function routeInteraction(interaction) {
   const guild = interaction.guild;
   const g = db.get(guild.id);
 
+  if (perms.isPermCommand(interaction.commandName)) { await perms.handleCommand(interaction); return; }
+
   if (interaction.commandName === 'deobf') {
-    if (!mod.hasModPerms(interaction.member, g)) {
+    if (!perms.canUseCommand(interaction.member, g, 'deobf')) {
       await interaction.reply({ content: "❌ Tu n'as pas la permission d'utiliser `/deobf` (Administrateur, Gérer le serveur, ou un rôle autorisé via `/staffrole`).", ephemeral: true });
       return;
     }
@@ -1028,14 +1008,14 @@ async function routeInteraction(interaction) {
   if (interaction.commandName === 'ask') {
     await interaction.deferReply();
     const question = interaction.options.getString('question');
-    const canModerate = mod.hasModPerms(interaction.member, g);
+    const canModerate = perms.hasStaff(interaction.member, g);
     const res = await ai.askClaude({ channelId: interaction.channelId, userId: interaction.user.id, userName: interaction.user.username, userText: question, persona: g.aiPersona, serverContext: needsServerContext(question) ? buildServerContext(guild) : null, speakerInfo: buildSpeakerInfo(interaction.member), guild, canModerate, modExecutor: canModerate ? (args) => executeModAction({ guild, actorMember: interaction.member, ...args }) : null });
     await interaction.editReply(res.error ? `❌ ${res.error}` : res.text);
     return;
   }
 
   const nonStaffAllowed = new Set(['warnings', 'help']); // /warnings gère lui-même le cas "soi-même"
-  if (!nonStaffAllowed.has(interaction.commandName) && !mod.hasModPerms(interaction.member, g)) {
+  if (!nonStaffAllowed.has(interaction.commandName) && !perms.canUseCommand(interaction.member, g, interaction.commandName)) {
     await interaction.reply({ content: "❌ Tu n'as pas la permission d'utiliser cette commande (Administrateur, Gérer le serveur, ou un rôle autorisé via `/staffrole`).", ephemeral: true });
     return;
   }
@@ -1047,7 +1027,7 @@ async function routeInteraction(interaction) {
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     await dbReadyPromise;
-    if (interaction.isAutocomplete()) { await economy.autocomplete(interaction); return; }
+    if (interaction.isAutocomplete()) { if (perms.isPermCommand(interaction.commandName)) await perms.autocomplete(interaction); else await economy.autocomplete(interaction); return; }
     if (interaction.customId && interaction.customId.startsWith('eco:')) { await economy.handleComponent(interaction); return; }
     if (interaction.isStringSelectMenu() || interaction.isButton()) { await routeSelect(interaction); return; }
     await routeInteraction(interaction);
@@ -1081,7 +1061,7 @@ client.on(Events.MessageCreate, async (message) => {
     // l'IA — plus fiable pour du bytecode VM obfusqué), staff uniquement.
     const luaAttachment = [...message.attachments.values()].find((a) => /\.(lua|luau|txt)$/i.test(a.name));
     if (luaAttachment) {
-      if (!mod.hasModPerms(message.member, g)) {
+      if (!perms.hasStaff(message.member, g)) {
         await message.reply({ content: "❌ Seul le staff peut utiliser la déobfuscation.", allowedMentions: { repliedUser: false } });
         return;
       }
@@ -1105,7 +1085,7 @@ client.on(Events.MessageCreate, async (message) => {
     const text = message.content.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim();
     if (!text) return;
     await message.channel.sendTyping().catch(() => {});
-    const canModerate = mod.hasModPerms(message.member, g);
+    const canModerate = perms.hasStaff(message.member, g);
     const res = await ai.askClaude({ channelId: message.channelId, userId: message.author.id, userName: message.author.username, userText: text, persona: g.aiPersona, serverContext: needsServerContext(text) ? buildServerContext(message.guild) : null, speakerInfo: buildSpeakerInfo(message.member), guild: message.guild, canModerate, modExecutor: canModerate ? (args) => executeModAction({ guild: message.guild, actorMember: message.member, ...args }) : null });
     const out = res.error ? `❌ ${res.error}` : res.text;
     await message.reply({ content: out, allowedMentions: { repliedUser: false } });
