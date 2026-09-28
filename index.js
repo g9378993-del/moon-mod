@@ -189,7 +189,7 @@ function runDeobfuscator(inputPath, extraArgs = []) {
       return;
     }
     const outPath = `${inputPath}.out.lua`;
-    const args = [DEOBF_ENTRY, inputPath, '-o', outPath, '--timeout', String(DEOBF_TIMEOUT_SEC), '--debug', ...extraArgs];
+    const args = [DEOBF_ENTRY, inputPath, '-o', outPath, '--timeout', String(DEOBF_TIMEOUT_SEC), ...extraArgs];
     let proc;
     try {
       proc = spawn('python3', args, { cwd: DEOBF_DIR });
@@ -204,7 +204,7 @@ function runDeobfuscator(inputPath, extraArgs = []) {
     proc.on('error', (e) => { clearTimeout(killer); resolve({ ok: false, error: `python3 introuvable ou erreur de lancement : ${e.message}` }); });
     proc.on('close', (code) => {
       clearTimeout(killer);
-      if (code === 0 && fs.existsSync(outPath)) { resolve({ ok: true, outPath }); return; }
+      if (code === 0 && fs.existsSync(outPath)) { resolve({ ok: true, outPath, log: stderr }); return; }
       // L'outil écrit déjà un résultat intermédiaire avant la dévirtualisation :
       // mieux vaut le renvoyer (marqué partiel) qu'un simple échec.
       if (fs.existsSync(outPath)) { resolve({ ok: true, partial: true, outPath }); return; }
@@ -225,6 +225,13 @@ function deobfMessage(result) {
     const count = head.match(/-- (\d+) statements recorded/);
     if (status && count && Number(count[1]) <= 1) {
       return `⚠️ Résultat vide : le script a planté dès le début de l'exécution simulée (${status[1].slice(0, 200)}). Il dépend sûrement de variables/fonctions absentes de l'environnement simulé, ou d'un morceau de code manquant.`;
+    }
+  } catch (e) { /* message standard */ }
+  try {
+    const head = fs.readFileSync(result.outPath, 'utf8').slice(0, 200);
+    if (head.startsWith('-- Deobfuscated by deobf (dynamic trace)')) {
+      const warns = (result.log || '').split('\n').filter((l) => l.startsWith('[!]')).slice(0, 2).join(' ').slice(0, 400);
+      return `⚠️ Trace de comportement seulement (pas le code complet)${warns ? ` — ${warns}` : ''} :`;
     }
   } catch (e) { /* message standard */ }
   return '✅ Script déobfusqué :';
