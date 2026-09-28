@@ -214,6 +214,21 @@ function runDeobfuscator(inputPath, extraArgs = []) {
     });
   });
 }
+
+// Message de résultat : évite de dire "✅" quand le script a planté dès le
+// début de la trace (résultat vide) ou que le temps a été dépassé.
+function deobfMessage(result) {
+  if (result.partial) return '⚠️ Résultat partiel (temps dépassé avant la fin de la dévirtualisation) :';
+  try {
+    const head = fs.readFileSync(result.outPath, 'utf8').slice(0, 3000);
+    const status = head.match(/^-- run status: (.+)$/m);
+    const count = head.match(/-- (\d+) statements recorded/);
+    if (status && count && Number(count[1]) <= 1) {
+      return `⚠️ Résultat vide : le script a planté dès le début de l'exécution simulée (${status[1].slice(0, 200)}). Il dépend sûrement de variables/fonctions absentes de l'environnement simulé, ou d'un morceau de code manquant.`;
+    }
+  } catch (e) { /* message standard */ }
+  return '✅ Script déobfusqué :';
+}
 const INSTANCE_ID = crypto.randomBytes(2).toString('hex');
 const STARTED_AT = Date.now();
 const dup = { count: 0, lastAt: null };
@@ -472,7 +487,7 @@ async function routeSelect(interaction) {
     return;
   }
 
-  if (interaction.customId === 'findcodes_select') {
+  if (interaction.customId.startsWith('findcodes_select')) {
     const value = interaction.values[0];
     const [msgId, attIndexStr, channelId] = value.split(':');
     await interaction.deferReply({ ephemeral: true });
@@ -898,39 +913,37 @@ async function handleModCommand(interaction, guild, g) {
 
     allFiles.sort((a, b) => b.createdAt - a.createdAt);
 
-    if (allFiles.length > 25) {
-      const grouped = allFiles.slice(0, 25).map((f, i) => {
-        const sizeStr = (f.size / 1024).toFixed(1);
-        return { label: `${i + 1}. ${f.name.slice(0, 80)}`, value: `${f.msgId}:${f.attIndex}:${f.channelId}`, description: `${sizeStr} KB · ${f.author}` };
-      });
-      const menu = new StringSelectMenuBuilder().setCustomId('findcodes_select').setPlaceholder('Choisir un fichier à télécharger...').addOptions(grouped);
-      const row = new ActionRowBuilder().addComponents(menu);
-      const embed = new EmbedBuilder().setColor(mod.COLORS.source)
-        .setTitle(`📎 "${rawQuery}" — ${allFiles.length} fichier(s) trouvé(s) dans #${channel.name}`)
-        .setDescription(`Trop de fichiers (${allFiles.length}). Choisis un fichier ci-dessous pour le télécharger (25 plus récents affichés).`)
-        .setFooter({ text: `${fetched} message(s) fouillé(s) · total: ${allFiles.length} fichier(s)` });
-      await interaction.editReply({ embeds: [embed], components: [row] });
-      return;
+    // Un menu Discord = 25 options max, un message = 5 lignes max -> 125 fichiers
+    // sélectionnables. Au-delà, la liste complète est jointe en fichier texte.
+    const MAX_SELECTABLE = 125;
+    const selectable = allFiles.slice(0, MAX_SELECTABLE);
+    const fmtSize = (n) => (n / 1024 / 1024 > 1 ? `${(n / 1024 / 1024).toFixed(2)} MB` : `${(n / 1024).toFixed(1)} KB`);
+    const rows = [];
+    for (let from = 0; from < selectable.length; from += 25) {
+      const chunk = selectable.slice(from, from + 25);
+      const options = chunk.map((f, j) => ({
+        label: `${from + j + 1}. ${f.name}`.slice(0, 100),
+        value: `${f.msgId}:${f.attIndex}:${f.channelId}`,
+        description: `${fmtSize(f.size)} · ${f.author}`.slice(0, 100),
+      }));
+      const menu = new StringSelectMenuBuilder()
+        .setCustomId(`findcodes_select_${rows.length}`)
+        .setPlaceholder(`Fichiers ${from + 1} à ${from + chunk.length} sur ${allFiles.length}...`)
+        .addOptions(options);
+      rows.push(new ActionRowBuilder().addComponents(menu));
     }
 
-    const lines = allFiles.map((f) => {
-      const sizeStr = (f.size / 1024 / 1024 > 1) ? `${(f.size / 1024 / 1024).toFixed(2)} MB` : `${(f.size / 1024).toFixed(1)} KB`;
-      return `**${f.name}** — ${sizeStr} · ${f.author} · <t:${Math.floor(f.createdAt / 1000)}:R>`;
-    });
+    const tooMany = allFiles.length > MAX_SELECTABLE;
     const embed = new EmbedBuilder().setColor(mod.COLORS.source)
-      .setTitle(`📎 "${rawQuery}" — ${allFiles.length} fichier(s) trouvé(s) dans #${channel.name}`)
-      .setDescription(`Les fichiers ci-dessous sont prêts à être téléchargés. Clique sur le nom d'un fichier pour l'obtenir.\n\n${lines.join('\n').slice(0, 4000)}`)
-      .setFooter({ text: `${fetched} message(s) fouillé(s)` });
-    
-    const buttons = allFiles.slice(0, 5).map((f) =>
-      new ButtonBuilder().setCustomId(`findcodes_dl_${f.msgId}_${f.attIndex}_${f.channelId}`).setLabel(`📥 ${f.name.slice(0, 20)}`).setStyle(ButtonStyle.Primary)
-    );
-    const rows = [];
-    for (let i = 0; i < buttons.length; i += 5) {
-      rows.push(new ActionRowBuilder().addComponents(buttons.slice(i, i + 5)));
+      .setTitle(`📎 \"${rawQuery}\" — ${allFiles.length} fichier(s) trouvé(s) dans #${channel.name}`)
+      .setDescription(`Choisis un fichier dans ${rows.length > 1 ? 'les menus' : 'le menu'} ci-dessous pour le télécharger (du plus récent au plus ancien).${tooMany ? `\nLimite Discord : seuls les ${MAX_SELECTABLE} plus récents sont dans les menus, la liste complète est dans le fichier joint.` : ''}`)
+      .setFooter({ text: `${fetched} message(s) fouillé(s) · total: ${allFiles.length} fichier(s)` });
+    const payload = { embeds: [embed], components: rows };
+    if (tooMany) {
+      const listing = allFiles.map((f, i) => `${i + 1}. ${f.name} — ${fmtSize(f.size)} — ${f.author} — ${new Date(f.createdAt).toISOString()} — ${f.msgUrl}`).join('\n');
+      payload.files = [new AttachmentBuilder(Buffer.from(listing, 'utf8'), { name: 'findcodes-liste-complete.txt' })];
     }
-    
-    await interaction.editReply({ embeds: [embed], components: rows });
+    await interaction.editReply(payload);
     return;
   }
   if (cmd === 'help') {
@@ -979,7 +992,7 @@ async function routeInteraction(interaction) {
     if (!result.ok) {
       await interaction.editReply(`❌ Échec de la déobfuscation :\n\`\`\`\n${(result.error || '').slice(0, 1800)}\n\`\`\``);
     } else {
-      await interaction.editReply({ content: result.partial ? '⚠️ Résultat partiel (temps dépassé avant la fin de la dévirtualisation) :' : '✅ Script déobfusqué :', files: [{ attachment: result.outPath, name: `deobf-${result.safeName.replace(/\.[^.]+$/, '')}.lua` }] });
+      await interaction.editReply({ content: deobfMessage(result), files: [{ attachment: result.outPath, name: `deobf-${result.safeName.replace(/\.[^.]+$/, '')}.lua` }] });
     }
     fs.rm(result.tmpDir, { recursive: true, force: true }, () => {});
     return;
@@ -1052,7 +1065,7 @@ client.on(Events.MessageCreate, async (message) => {
       if (!result.ok) {
         await message.reply({ content: `❌ Échec de la déobfuscation :\n\`\`\`\n${(result.error || '').slice(0, 1800)}\n\`\`\``, allowedMentions: { repliedUser: false } });
       } else {
-        await message.reply({ content: result.partial ? '⚠️ Résultat partiel (temps dépassé avant la fin de la dévirtualisation) :' : '✅ Script déobfusqué :', files: [{ attachment: result.outPath, name: `deobf-${result.safeName.replace(/\.[^.]+$/, '')}.lua` }], allowedMentions: { repliedUser: false } });
+        await message.reply({ content: deobfMessage(result), files: [{ attachment: result.outPath, name: `deobf-${result.safeName.replace(/\.[^.]+$/, '')}.lua` }], allowedMentions: { repliedUser: false } });
       }
       fs.rm(result.tmpDir, { recursive: true, force: true }, () => {});
       return;
