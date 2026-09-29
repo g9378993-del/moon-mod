@@ -535,7 +535,9 @@ const HELP_CATEGORIES = {
   trade: {
     label: '🔄 Échange brainrots',
     text: [
-      '`/brainrot post photo:… nom:… [veux] [description]` — poste ton brainrot avec un bouton "Trade".',
+      '`/tradeconfig panel [salon]` — (staff) poste le panel avec le bouton "Create Trade", pour que les membres (sans accès aux commandes) puissent poster une annonce.',
+      '`/brainrot post photo:… nom:… [veux] [description]` — poste ton brainrot avec un bouton "Trade" (alternative pour le staff).',
+      'Un membre ne peut avoir qu\'UNE annonce active : il doit la retirer (bouton "Retirer") avant d\'en reposter une.',
       'Quand quelqu\'un clique "Trade", il décrit son offre → tu la reçois en DM avec Accepter/Refuser.',
       '`/brainrot mine` — voir tes annonces. `/brainrot remove` — en retirer une.',
       '`/tradeconfig salon` `voir` — (staff) restreindre les annonces à un salon précis.',

@@ -1,34 +1,43 @@
 // ================================================================
 // trade.js — Panel d'échange "Steal a Brainrot"
-//  • /brainrot post : poste ta photo + un bouton "🔄 Trade"
+//  • /tradeconfig panel : poste un panel fixe avec un bouton "➕ Create
+//    Trade" — comme les membres n'ont pas accès aux commandes, c'est le
+//    seul moyen pour eux de poster une annonce.
+//  • Clic sur "Create Trade" → un formulaire (nom / recherché / description)
+//    → le bot demande la photo dans le salon → dès qu'elle arrive, l'annonce
+//    est postée avec un bouton "🔄 Trade" et un bouton "🗑️ Retirer".
+//  • Un membre ne peut avoir qu'UNE annonce active à la fois : il doit la
+//    retirer avant de pouvoir en créer une autre.
 //  • Un membre intéressé clique "Trade" → un formulaire lui demande ce
 //    qu'il propose en échange → le bot t'envoie ça en DM avec deux
-//    boutons "✅ Accepter" / "❌ Refuser"
-//  • Toi (le vendeur) tu acceptes ou refuses depuis ton DM, l'autre
-//    membre reçoit la réponse en DM automatiquement.
+//    boutons "✅ Accepter" / "❌ Refuser".
 // ================================================================
 const {
   SlashCommandBuilder, ChannelType, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
-  ModalBuilder, TextInputBuilder, TextInputStyle,
+  ModalBuilder, TextInputBuilder, TextInputStyle, PermissionFlagsBits,
 } = require('discord.js');
 const db = require('./db');
 const perms = require('./perms');
 
 const RED = 0xFF0000;
 const NO_PERM = "❌ Tu n'as pas la permission d'utiliser cette commande.";
+const PHOTO_WAIT_MS = 2 * 60 * 1000; // 2 minutes pour envoyer la photo après le formulaire
 
 function store(g) {
   if (!g.trades || typeof g.trades !== 'object') g.trades = {};
   const t = g.trades;
   if (!t.listings || typeof t.listings !== 'object') t.listings = {};
   if (!t.seq) t.seq = 0;
-  if (t.channelId === undefined) t.channelId = null; // null = pas de restriction de salon
+  if (t.channelId === undefined) t.channelId = null; // null = pas de restriction de salon pour poster
+  if (!t.panel) t.panel = { channelId: null, messageId: null };
   return t;
 }
 const emb = () => new EmbedBuilder().setColor(RED);
 const trunc = (s, n) => (s && s.length > n ? `${s.slice(0, n - 1)}…` : s);
+// Une seule annonce active par membre à la fois.
+const findOpenListing = (t, userId) => Object.values(t.listings).find((l) => l.ownerId === userId && l.status === 'open');
 
-function listingEmbed(listing, guild) {
+function listingEmbed(listing) {
   const e = emb().setTitle(`🧠 ${listing.itemName}`).setImage(listing.imageUrl)
     .setFooter({ text: `Posté par ${listing.ownerTag}` }).setTimestamp(listing.createdAt);
   if (listing.description) e.setDescription(listing.description);
@@ -42,6 +51,22 @@ function listingRow(listing) {
     new ButtonBuilder().setCustomId(`trade:offer:${listing.id}`).setLabel('Trade').setEmoji('🔄').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(`trade:cancel:${listing.id}`).setLabel('Retirer').setEmoji('🗑️').setStyle(ButtonStyle.Secondary),
   )];
+}
+function panelPayload(guild, t) {
+  const openCount = Object.values(t.listings).filter((l) => l.status === 'open').length;
+  const embed = emb().setTitle('🔄 Brainrot Trading')
+    .setDescription([
+      "Tu as un brainrot à échanger ? Clique **Create Trade** ci-dessous.",
+      "1️⃣ Remplis le formulaire (nom, ce que tu recherches, description)",
+      "2️⃣ Envoie la photo de ton brainrot dans ce salon quand le bot te le demande",
+      "3️⃣ Ton annonce est postée avec un bouton **Trade** — les autres membres pourront te faire une offre, que tu recevras en message privé.",
+      "\n⚠️ Une seule annonce active à la fois : retire la tienne (bouton **Retirer**) avant d'en créer une nouvelle.",
+    ].join('\n'))
+    .setFooter({ text: `${openCount} annonce(s) active(s)` });
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('trade:panel:create').setLabel('Create Trade').setEmoji('➕').setStyle(ButtonStyle.Danger),
+  );
+  return { embeds: [embed], components: [row] };
 }
 
 // ----------------------------------------------------------------
@@ -58,9 +83,11 @@ const commands = [
     .addSubcommand((s) => s.setName('mine').setDescription('Voir tes annonces en cours'))
     .addSubcommand((s) => s.setName('remove').setDescription('Retirer une de tes annonces').addStringOption(listingOpt)),
 
-  new SlashCommandBuilder().setName('tradeconfig').setDescription('(Staff) Configurer le salon d\'échange')
-    .addSubcommand((s) => s.setName('salon').setDescription('Restreindre /brainrot post à un salon (vide = n\'importe où)')
+  new SlashCommandBuilder().setName('tradeconfig').setDescription('(Staff) Configurer les échanges de brainrots')
+    .addSubcommand((s) => s.setName('salon').setDescription('Restreindre les annonces à un salon (vide = n\'importe où)')
       .addChannelOption((o) => o.setName('salon').setDescription('Salon dédié aux échanges').addChannelTypes(ChannelType.GuildText)))
+    .addSubcommand((s) => s.setName('panel').setDescription('Poster le panel avec le bouton "Create Trade"')
+      .addChannelOption((o) => o.setName('salon').setDescription('Salon où poster le panel (défaut : ici)').addChannelTypes(ChannelType.GuildText)))
     .addSubcommand((s) => s.setName('voir').setDescription('Voir la configuration actuelle')),
 ].map((c) => c.setDMPermission(false).toJSON());
 
@@ -73,6 +100,22 @@ async function autocomplete(interaction) {
   const q = interaction.options.getFocused().toLowerCase();
   const mine = Object.values(t.listings).filter((l) => l.ownerId === interaction.user.id && l.status === 'open' && l.itemName.toLowerCase().includes(q));
   await interaction.respond(mine.slice(0, 25).map((l) => ({ name: `${l.itemName} (#${l.id})`.slice(0, 100), value: l.id }))).catch(() => {});
+}
+
+// Termine la création d'une annonce (utilisé par /brainrot post ET le
+// formulaire du panel) une fois qu'on a nom / photo / etc.
+async function publishListing(guild, t, targetChannel, owner, fields) {
+  t.seq += 1;
+  const listing = {
+    id: String(t.seq), ownerId: owner.id, ownerTag: owner.tag,
+    itemName: fields.itemName, wants: fields.wants || '', description: fields.description || '',
+    imageUrl: fields.imageUrl, status: 'open', createdAt: Date.now(), channelId: targetChannel.id, messageId: null,
+  };
+  const msg = await targetChannel.send({ embeds: [listingEmbed(listing)], components: listingRow(listing) });
+  listing.messageId = msg.id;
+  t.listings[listing.id] = listing;
+  await db.save(guild.id);
+  return { listing, msg };
 }
 
 async function handleCommand(interaction) {
@@ -90,31 +133,42 @@ async function handleCommand(interaction) {
       const ch = interaction.options.getChannel('salon');
       t.channelId = ch ? ch.id : null;
       await db.save(guild.id);
-      await reply(ch ? `✅ \`/brainrot post\` n'est utilisable que dans ${ch}.` : '✅ Restriction retirée : \`/brainrot post\` marche dans n\'importe quel salon.');
+      await reply(ch ? `✅ Les annonces (postées par le panel ou \`/brainrot post\`) apparaîtront dans ${ch}.` : "✅ Restriction retirée : les annonces apparaissent dans le salon où l'action a lieu.");
       return;
     }
-    await reply(`⚙️ Salon d'échange : ${t.channelId ? `<#${t.channelId}>` : 'aucune restriction'}\n📦 Annonces ouvertes : ${Object.values(t.listings).filter((l) => l.status === 'open').length}`);
+    if (sub === 'panel') {
+      const channel = interaction.options.getChannel('salon') || interaction.channel;
+      const perm = channel.permissionsFor(guild.members.me);
+      if (!perm?.has(PermissionFlagsBits.EmbedLinks) || !perm?.has(PermissionFlagsBits.SendMessages)) { await reply(`❌ Il me manque **Envoyer des messages** ou **Intégrer des liens** dans ${channel}.`); return; }
+      try {
+        const msg = await channel.send(panelPayload(guild, t));
+        if (t.panel.channelId && t.panel.messageId) {
+          const oldCh = guild.channels.cache.get(t.panel.channelId);
+          if (oldCh) oldCh.messages.delete(t.panel.messageId).catch(() => {});
+        }
+        t.panel.channelId = channel.id; t.panel.messageId = msg.id;
+        await db.save(guild.id);
+        await reply(`✅ Panel posté dans ${channel}.`);
+      } catch (err) { await reply(`❌ Impossible de poster dans ${channel} (${err.message}).`); }
+      return;
+    }
+    await reply(`⚙️ Salon des annonces : ${t.channelId ? `<#${t.channelId}>` : 'n\'importe où'}\n🖼️ Panel : ${t.panel.channelId ? `<#${t.panel.channelId}>` : 'pas encore posté'}\n📦 Annonces ouvertes : ${Object.values(t.listings).filter((l) => l.status === 'open').length}`);
     return;
   }
 
   // ------------------------- /brainrot -------------------------
   if (sub === 'post') {
     if (t.channelId && interaction.channelId !== t.channelId) { await interaction.reply({ content: `❌ Les annonces ne peuvent être postées que dans <#${t.channelId}>.`, ephemeral: true }); return; }
+    const existing = findOpenListing(t, interaction.user.id);
+    if (existing) { await interaction.reply({ content: `❌ Tu as déjà une annonce active : **${existing.itemName}**. Retire-la d'abord (bouton **Retirer** sur son message, ou \`/brainrot remove\`).`, ephemeral: true }); return; }
     const photo = interaction.options.getAttachment('photo');
     if (!photo.contentType || !photo.contentType.startsWith('image/')) { await interaction.reply({ content: '❌ Le fichier joint doit être une image.', ephemeral: true }); return; }
     await interaction.deferReply();
-
-    t.seq += 1;
-    const listing = {
-      id: String(t.seq), ownerId: interaction.user.id, ownerTag: interaction.user.tag,
-      itemName: interaction.options.getString('nom'), wants: interaction.options.getString('veux') || '',
-      description: interaction.options.getString('description') || '', imageUrl: photo.url,
-      status: 'open', createdAt: Date.now(), channelId: interaction.channelId, messageId: null,
-    };
-    const msg = await interaction.editReply({ embeds: [listingEmbed(listing, guild)], components: listingRow(listing) });
-    listing.messageId = msg.id;
-    t.listings[listing.id] = listing;
-    await db.save(guild.id);
+    const targetChannel = t.channelId ? (guild.channels.cache.get(t.channelId) || interaction.channel) : interaction.channel;
+    const { listing } = await publishListing(guild, t, targetChannel, interaction.user, {
+      itemName: interaction.options.getString('nom'), wants: interaction.options.getString('veux'), description: interaction.options.getString('description'), imageUrl: photo.url,
+    });
+    await interaction.editReply(targetChannel.id === interaction.channelId ? { content: null, embeds: [listingEmbed(listing)], components: listingRow(listing) } : `✅ Annonce postée dans <#${targetChannel.id}>.`);
     return;
   }
 
@@ -136,10 +190,40 @@ async function handleCommand(interaction) {
     await db.save(guild.id);
     const ch = guild.channels.cache.get(listing.channelId);
     const msg = ch ? await ch.messages.fetch(listing.messageId).catch(() => null) : null;
-    if (msg) await msg.edit({ embeds: [listingEmbed(listing, guild)], components: [] }).catch(() => {});
+    if (msg) await msg.edit({ embeds: [listingEmbed(listing)], components: [] }).catch(() => {});
     await reply(`✅ Annonce **${listing.itemName}** retirée.`);
     return;
   }
+}
+
+// ----------------------------------------------------------------
+// Attend la photo envoyée par l'utilisateur dans le salon, après le
+// formulaire du panel, puis publie l'annonce.
+// ----------------------------------------------------------------
+function collectPhotoAndPublish(interaction, guild, t, fields) {
+  const channel = interaction.channel;
+  const collector = channel.createMessageCollector({
+    filter: (m) => m.author.id === interaction.user.id && m.attachments.size > 0 && [...m.attachments.values()][0].contentType?.startsWith('image/'),
+    time: PHOTO_WAIT_MS, max: 1,
+  });
+  collector.on('collect', async (m) => {
+    try {
+      // On revérifie la limite au cas où une autre annonce aurait été créée entre-temps.
+      const already = findOpenListing(t, interaction.user.id);
+      if (already) { await interaction.editReply(`❌ Tu as déjà une annonce active : **${already.itemName}**. Retire-la d'abord.`); m.delete().catch(() => {}); return; }
+      const photoUrl = m.attachments.first().url;
+      const targetChannel = t.channelId ? (guild.channels.cache.get(t.channelId) || channel) : channel;
+      const { listing } = await publishListing(guild, t, targetChannel, interaction.user, { ...fields, imageUrl: photoUrl });
+      m.delete().catch(() => {}); // on nettoie le salon, la photo vit maintenant dans l'annonce
+      await interaction.editReply(`✅ Annonce **${listing.itemName}** publiée dans <#${targetChannel.id}> !`);
+    } catch (err) {
+      console.error('Erreur publication annonce (panel) :', err);
+      await interaction.editReply(`❌ Erreur pendant la publication : ${err.message || err}.`).catch(() => {});
+    }
+  });
+  collector.on('end', (collected) => {
+    if (collected.size === 0) interaction.editReply('⏰ Temps écoulé (2 min), aucune photo reçue. Reclique sur **Create Trade** pour recommencer.').catch(() => {});
+  });
 }
 
 // ----------------------------------------------------------------
@@ -152,6 +236,34 @@ async function handleComponent(interaction) {
   const t = store(g);
   const id = interaction.customId;
   const eph = (payload) => interaction.reply({ ephemeral: true, allowedMentions: { parse: [] }, ...(typeof payload === 'string' ? { content: payload } : payload) });
+
+  // ---------- Bouton "Create Trade" du panel ----------
+  if (interaction.isButton() && id === 'trade:panel:create') {
+    const existing = findOpenListing(t, interaction.user.id);
+    if (existing) { await eph(`❌ Tu as déjà une annonce active : **${existing.itemName}**. Clique **Retirer** sur son message (ou \`/brainrot remove\`) avant d'en créer une nouvelle.`); return; }
+    const modal = new ModalBuilder().setCustomId('trade:panelmodal').setTitle('Créer une annonce');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nom').setLabel('Nom du brainrot').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('veux').setLabel('Ce que tu recherches (optionnel)').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(200)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('description').setLabel('Description (optionnel)').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(500)),
+    );
+    await interaction.showModal(modal);
+    return;
+  }
+
+  // ---------- Formulaire du panel soumis → on demande la photo ----------
+  if (interaction.isModalSubmit() && id === 'trade:panelmodal') {
+    const existing = findOpenListing(t, interaction.user.id);
+    if (existing) { await eph(`❌ Tu as déjà une annonce active : **${existing.itemName}**. Retire-la d'abord.`); return; }
+    await interaction.deferReply({ ephemeral: true });
+    await interaction.editReply(`📸 Envoie maintenant la **photo** de ton brainrot ici, dans ce salon (tu as ${Math.round(PHOTO_WAIT_MS / 60000)} minutes).`);
+    collectPhotoAndPublish(interaction, guild, t, {
+      itemName: interaction.fields.getTextInputValue('nom'),
+      wants: interaction.fields.getTextInputValue('veux'),
+      description: interaction.fields.getTextInputValue('description'),
+    });
+    return;
+  }
 
   // ---------- Bouton "Trade" sur l'annonce ----------
   if (interaction.isButton() && id.startsWith('trade:offer:')) {
@@ -174,7 +286,7 @@ async function handleComponent(interaction) {
     if (listing.status !== 'open') { await eph('❌ Déjà retirée.'); return; }
     listing.status = 'cancelled';
     await db.save(guild.id);
-    await interaction.update({ embeds: [listingEmbed(listing, guild)], components: [] });
+    await interaction.update({ embeds: [listingEmbed(listing)], components: [] });
     return;
   }
 
