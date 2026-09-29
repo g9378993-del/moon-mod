@@ -1155,9 +1155,9 @@ require('./server');
 (async () => {
   await ensureDeobfExtracted();
   await ensureLuauBinary();
+  if (!process.env.DISCORD_TOKEN) console.error("❌ DISCORD_TOKEN manquant : ajoute-le dans les variables d'environnement.");
+  client.login(process.env.DISCORD_TOKEN).catch((e) => console.error('❌ Connexion Discord impossible :', e.message));
 })();
-if (!process.env.DISCORD_TOKEN) console.error("❌ DISCORD_TOKEN manquant : ajoute-le dans les variables d'environnement.");
-client.login(process.env.DISCORD_TOKEN).catch((e) => console.error('❌ Connexion Discord impossible :', e.message));
 
 if (process.env.PUBLIC_URL) {
   const https = require('https');
