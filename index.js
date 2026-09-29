@@ -146,18 +146,16 @@ async function ensureLuauBinary() {
   try {
     fs.mkdirSync(binDir, { recursive: true });
 
-    // 1. Trouver l'asset Linux de la dernière release.
-    const relRes = await fetch('https://api.github.com/repos/luau-lang/luau/releases/latest', { headers: { 'user-agent': 'panel-bot' } });
-    if (!relRes.ok) { console.error(`[deobf] ÉCHEC : l'appel à l'API GitHub a renvoyé ${relRes.status}.`); return; }
-    const rel = await relRes.json();
-    const asset = (rel.assets || []).find((a) => /ubuntu/i.test(a.name) && a.name.endsWith('.zip'));
-    if (!asset) { console.error(`[deobf] ÉCHEC : aucun asset "ubuntu*.zip" trouvé dans la release ${rel.tag_name || '?'}. Assets disponibles : ${(rel.assets || []).map((a) => a.name).join(', ')}`); return; }
-    console.log(`[deobf] Asset trouvé : ${asset.name} (${asset.browser_download_url})`);
-
-    // 2. Télécharger le zip.
-    const dlRes = await fetch(asset.browser_download_url);
-    if (!dlRes.ok) { console.error(`[deobf] ÉCHEC : le téléchargement de ${asset.name} a renvoyé ${dlRes.status}.`); return; }
+    // Lien de téléchargement direct de GitHub (redirige toujours vers la
+    // dernière release) : contrairement à api.github.com, ce lien n'est PAS
+    // limité à 60 appels/heure par IP, donc pas de risque de quota cramé
+    // après plusieurs redéploiements.
+    const assetUrl = 'https://github.com/luau-lang/luau/releases/latest/download/luau-ubuntu.zip';
+    console.log(`[deobf] Téléchargement : ${assetUrl}`);
+    const dlRes = await fetch(assetUrl, { redirect: 'follow' });
+    if (!dlRes.ok) { console.error(`[deobf] ÉCHEC : le téléchargement a renvoyé ${dlRes.status} (${dlRes.url}).`); return; }
     const buf = await dlRes.arrayBuffer();
+    if (buf.byteLength < 10000) { console.error(`[deobf] ÉCHEC : réponse trop petite (${buf.byteLength} octets) — probablement une page d'erreur, pas le zip.`); return; }
     const zipPath = path.join(binDir, 'luau.zip');
     fs.writeFileSync(zipPath, Buffer.from(buf));
     console.log(`[deobf] Zip téléchargé (${buf.byteLength} octets) : ${zipPath}`);
