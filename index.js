@@ -12,6 +12,7 @@ const automod = require('./automod');
 const ai = require('./ai');
 const economy = require('./economy');
 const perms = require('./perms');
+const trade = require('./trade');
 const {
   Client, GatewayIntentBits, Partials, Events, PermissionFlagsBits, ChannelType,
   EmbedBuilder, REST, Routes, SlashCommandBuilder, AttachmentBuilder,
@@ -431,8 +432,9 @@ const commands = [
   new SlashCommandBuilder().setName('help').setDescription('Voir toutes les commandes'),
 ].map((c) => c.setDMPermission(false).toJSON());
 
-commands.push(...economy.commands, ...perms.commands);
+commands.push(...economy.commands, ...perms.commands, ...trade.commands);
 perms.setCommandNames(commands.map((c) => c.name));
+
 
 const ownerCommands = [
   new SlashCommandBuilder().setName('diag').setDescription('(Toi uniquement) État du bot : stockage, doublons, serveurs'),
@@ -528,6 +530,15 @@ const HELP_CATEGORIES = {
       '`/ecoadmin add` `remove` `set` `reset` — modifier les pièces d\'un membre.',
       '`/shop add` `edit` `remove` `list` — gérer le shop (rôle auto, stock...).',
       '`/coins` — voir son solde.',
+    ].join('\n'),
+  },
+  trade: {
+    label: '🔄 Échange brainrots',
+    text: [
+      '`/brainrot post photo:… nom:… [veux] [description]` — poste ton brainrot avec un bouton "Trade".',
+      'Quand quelqu\'un clique "Trade", il décrit son offre → tu la reçois en DM avec Accepter/Refuser.',
+      '`/brainrot mine` — voir tes annonces. `/brainrot remove` — en retirer une.',
+      '`/tradeconfig salon` `voir` — (staff) restreindre les annonces à un salon précis.',
     ].join('\n'),
   },
   deobf: {
@@ -1171,6 +1182,7 @@ async function routeInteraction(interaction) {
   }
 
   if (economy.isEconomyCommand(interaction.commandName)) { await economy.handleCommand(interaction); return; }
+  if (trade.isTradeCommand(interaction.commandName)) { await trade.handleCommand(interaction); return; }
 
   if (interaction.commandName === 'ask') {
     await interaction.deferReply();
@@ -1194,8 +1206,9 @@ async function routeInteraction(interaction) {
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     await dbReadyPromise;
-    if (interaction.isAutocomplete()) { if (perms.isPermCommand(interaction.commandName)) await perms.autocomplete(interaction); else await economy.autocomplete(interaction); return; }
+    if (interaction.isAutocomplete()) { if (perms.isPermCommand(interaction.commandName)) await perms.autocomplete(interaction); else if (trade.isTradeCommand(interaction.commandName)) await trade.autocomplete(interaction); else await economy.autocomplete(interaction); return; }
     if (interaction.customId && interaction.customId.startsWith('eco:')) { await economy.handleComponent(interaction); return; }
+    if (interaction.customId && interaction.customId.startsWith('trade:')) { await trade.handleComponent(interaction); return; }
     if (interaction.isStringSelectMenu() || interaction.isButton()) { await routeSelect(interaction); return; }
     await routeInteraction(interaction);
   } catch (err) {
