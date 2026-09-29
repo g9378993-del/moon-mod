@@ -261,12 +261,42 @@ function collectPhotoAndPublish(interaction, guild, t, fields) {
 // BOUTONS / MODAL  (customId qui commence par "trade:")
 // ----------------------------------------------------------------
 async function handleComponent(interaction) {
+  const id = interaction.customId;
+  const eph = (payload) => interaction.reply({ ephemeral: true, allowedMentions: { parse: [] }, ...(typeof payload === 'string' ? { content: payload } : payload) });
+
+  // ---------- Accepter / Refuser (cliqué dans le DM du propriétaire, donc
+  // AUCUN interaction.guild ici — c'est pour ça que ça ne répondait pas :
+  // il faut traiter ce cas avant le "pas de guild -> on ignore" ci-dessous,
+  // et retrouver le serveur via l'id embarqué dans le customId). ----------
+  if (interaction.isButton() && (id.startsWith('trade:accept:') || id.startsWith('trade:decline:'))) {
+    const [, action, guildId, listingId, offererId] = id.split(':');
+    const guild = interaction.client.guilds.cache.get(guildId) || await interaction.client.guilds.fetch(guildId).catch(() => null);
+    if (!guild) { await eph('❌ Je ne suis plus sur ce serveur.'); return; }
+    const t = store(db.get(guild.id));
+    const listing = t.listings[listingId];
+    if (!listing) { await eph('❌ Cette annonce n\'existe plus.'); return; }
+    if (interaction.user.id !== listing.ownerId) { await eph('❌ Seul le propriétaire de l\'annonce peut répondre à cette offre.'); return; }
+
+    await interaction.deferUpdate();
+    const offerer = await interaction.client.users.fetch(offererId).catch(() => null);
+    const disabledRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('trade:done_accept').setLabel('Accepté').setEmoji('✅').setStyle(ButtonStyle.Success).setDisabled(true),
+      new ButtonBuilder().setCustomId('trade:done_decline').setLabel('Refusé').setEmoji('❌').setStyle(ButtonStyle.Danger).setDisabled(true),
+    );
+    if (action === 'accept') {
+      await interaction.editReply({ components: [disabledRow], content: `✅ Tu as accepté l'offre de <@${offererId}>. Contacte-le pour finaliser l'échange !` });
+      if (offerer) await offerer.send(`✅ **${interaction.user.tag}** a accepté ton offre pour "**${listing.itemName}**" ! Contacte-le pour finaliser l'échange.`).catch(() => {});
+    } else {
+      await interaction.editReply({ components: [disabledRow], content: `❌ Tu as refusé l'offre de <@${offererId}>.` });
+      if (offerer) await offerer.send(`❌ **${interaction.user.tag}** a refusé ton offre pour "**${listing.itemName}**".`).catch(() => {});
+    }
+    return;
+  }
+
   const guild = interaction.guild;
   if (!guild) return;
   const g = db.get(guild.id);
   const t = store(g);
-  const id = interaction.customId;
-  const eph = (payload) => interaction.reply({ ephemeral: true, allowedMentions: { parse: [] }, ...(typeof payload === 'string' ? { content: payload } : payload) });
 
   // ---------- Bouton "Create Trade" du panel ----------
   if (interaction.isButton() && id === 'trade:panel:create') {
@@ -336,8 +366,8 @@ async function handleComponent(interaction) {
       .setDescription(`**${interaction.user.tag}** (<@${interaction.user.id}>) propose :\n> ${offerText}`)
       .setFooter({ text: `Annonce #${listing.id} · ${guild.name}` }).setTimestamp();
     const dmRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`trade:accept:${listing.id}:${interaction.user.id}`).setLabel('Accepter').setEmoji('✅').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`trade:decline:${listing.id}:${interaction.user.id}`).setLabel('Refuser').setEmoji('❌').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`trade:accept:${guild.id}:${listing.id}:${interaction.user.id}`).setLabel('Accepter').setEmoji('✅').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`trade:decline:${guild.id}:${listing.id}:${interaction.user.id}`).setLabel('Refuser').setEmoji('❌').setStyle(ButtonStyle.Danger),
     );
     try {
       await owner.send({ embeds: [dmEmbed], components: [dmRow] });
@@ -348,28 +378,6 @@ async function handleComponent(interaction) {
     return;
   }
 
-  // ---------- Accepter / Refuser (dans le DM du propriétaire) ----------
-  if (interaction.isButton() && (id.startsWith('trade:accept:') || id.startsWith('trade:decline:'))) {
-    const [, action, listingId, offererId] = id.split(':');
-    const listing = t.listings[listingId];
-    if (!listing) { await eph('❌ Cette annonce n\'existe plus.'); return; }
-    if (interaction.user.id !== listing.ownerId) { await eph('❌ Seul le propriétaire de l\'annonce peut répondre à cette offre.'); return; }
-
-    await interaction.deferUpdate();
-    const offerer = await interaction.client.users.fetch(offererId).catch(() => null);
-    const disabledRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('trade:done_accept').setLabel('Accepté').setEmoji('✅').setStyle(ButtonStyle.Success).setDisabled(true),
-      new ButtonBuilder().setCustomId('trade:done_decline').setLabel('Refusé').setEmoji('❌').setStyle(ButtonStyle.Danger).setDisabled(true),
-    );
-    if (action === 'accept') {
-      await interaction.editReply({ components: [disabledRow], content: `✅ Tu as accepté l'offre de <@${offererId}>. Contacte-le pour finaliser l'échange !` });
-      if (offerer) await offerer.send(`✅ **${interaction.user.tag}** a accepté ton offre pour "**${listing.itemName}**" ! Contacte-le pour finaliser l'échange.`).catch(() => {});
-    } else {
-      await interaction.editReply({ components: [disabledRow], content: `❌ Tu as refusé l'offre de <@${offererId}>.` });
-      if (offerer) await offerer.send(`❌ **${interaction.user.tag}** a refusé ton offre pour "**${listing.itemName}**".`).catch(() => {});
-    }
-    return;
-  }
 }
 
 module.exports = { commands, isTradeCommand, handleCommand, handleComponent, autocomplete };
