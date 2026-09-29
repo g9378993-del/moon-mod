@@ -130,30 +130,74 @@ function downloadAndDeobf(url, name, extraArgs = []) {
 async function ensureLuauBinary() {
   const binDir = path.join(DEOBF_DIR, 'bin');
   const luauPath = path.join(binDir, 'luau');
-  if (!fs.existsSync(DEOBF_ENTRY) || fs.existsSync(luauPath)) return;
+  if (!fs.existsSync(DEOBF_ENTRY)) return;
+  if (fs.existsSync(luauPath)) { console.log('[deobf] Binaire luau déjà présent, pas de téléchargement.'); return; }
+  console.log('[deobf] Binaire luau absent, téléchargement automatique...');
+
+  // 0. `unzip` doit exister sur le serveur, sinon inutile d'aller plus loin.
+  const hasUnzip = await new Promise((resolve) => {
+    const p = spawn('unzip', ['-v']);
+    p.on('error', () => resolve(false));
+    p.on('close', (code) => resolve(code === 0));
+  });
+  if (!hasUnzip) { console.error("[deobf] ÉCHEC : la commande `unzip` n'existe pas sur ce serveur. Impossible d'extraire le binaire automatiquement."); return; }
+  console.log('[deobf] `unzip` disponible ✅');
+
   try {
-    console.log('[deobf] Binaire luau absent, téléchargement automatique...');
     fs.mkdirSync(binDir, { recursive: true });
-    const rel = await fetch('https://api.github.com/repos/luau-lang/luau/releases/latest', { headers: { 'user-agent': 'panel-bot' } }).then((r) => r.json());
+
+    // 1. Trouver l'asset Linux de la dernière release.
+    const relRes = await fetch('https://api.github.com/repos/luau-lang/luau/releases/latest', { headers: { 'user-agent': 'panel-bot' } });
+    if (!relRes.ok) { console.error(`[deobf] ÉCHEC : l'appel à l'API GitHub a renvoyé ${relRes.status}.`); return; }
+    const rel = await relRes.json();
     const asset = (rel.assets || []).find((a) => /ubuntu/i.test(a.name) && a.name.endsWith('.zip'));
-    if (!asset) { console.error('[deobf] Aucun binaire Linux (ubuntu) trouvé dans la dernière release luau-lang/luau.'); return; }
+    if (!asset) { console.error(`[deobf] ÉCHEC : aucun asset "ubuntu*.zip" trouvé dans la release ${rel.tag_name || '?'}. Assets disponibles : ${(rel.assets || []).map((a) => a.name).join(', ')}`); return; }
+    console.log(`[deobf] Asset trouvé : ${asset.name} (${asset.browser_download_url})`);
+
+    // 2. Télécharger le zip.
+    const dlRes = await fetch(asset.browser_download_url);
+    if (!dlRes.ok) { console.error(`[deobf] ÉCHEC : le téléchargement de ${asset.name} a renvoyé ${dlRes.status}.`); return; }
+    const buf = await dlRes.arrayBuffer();
     const zipPath = path.join(binDir, 'luau.zip');
-    const buf = await fetch(asset.browser_download_url).then((r) => r.arrayBuffer());
     fs.writeFileSync(zipPath, Buffer.from(buf));
-    await new Promise((resolve) => {
+    console.log(`[deobf] Zip téléchargé (${buf.byteLength} octets) : ${zipPath}`);
+
+    // 3. Extraire.
+    const extractCode = await new Promise((resolve) => {
       const p = spawn('unzip', ['-o', zipPath, '-d', binDir]);
-      p.on('close', resolve);
-      p.on('error', resolve);
+      let stderr = '';
+      p.stderr.on('data', (d) => { stderr += d.toString(); });
+      p.on('close', (code) => { if (stderr) console.log('[deobf] unzip stderr :', stderr.trim()); resolve(code); });
+      p.on('error', (e) => { console.error('[deobf] ÉCHEC : impossible de lancer unzip :', e.message); resolve(1); });
     });
     fs.rm(zipPath, { force: true }, () => {});
-    for (const f of ['luau', 'luau-ast']) {
-      const fp = path.join(binDir, f);
-      if (fs.existsSync(fp)) fs.chmodSync(fp, 0o755);
+    console.log(`[deobf] unzip terminé (code ${extractCode})`);
+
+    // 4. Chercher le binaire "luau" où qu'il soit dans binDir (au cas où le
+    // zip aurait un sous-dossier), et le mettre directement dans binDir/luau.
+    const found = findFileRecursive(binDir, (name) => name === 'luau' || name === 'luau.exe');
+    if (found && found !== luauPath) { fs.copyFileSync(found, luauPath); }
+    if (fs.existsSync(luauPath)) {
+      fs.chmodSync(luauPath, 0o755);
+      const analyzePath = findFileRecursive(binDir, (name) => name === 'luau-ast' || name === 'luau-analyze');
+      if (analyzePath) fs.chmodSync(analyzePath, 0o755);
+      console.log('[deobf] Binaire luau installé ✅');
+    } else {
+      const listing = fs.readdirSync(binDir, { recursive: true }).join(', ');
+      console.error(`[deobf] ÉCHEC : toujours pas de binaire "luau" après extraction. Contenu de bin/ : ${listing || '(vide)'}`);
     }
-    console.log(fs.existsSync(luauPath) ? '[deobf] Binaire luau installé ✅' : "[deobf] Échec : luau absent après extraction (`unzip` installé sur le serveur ?).");
   } catch (e) {
     console.error('[deobf] Installation automatique du binaire luau impossible :', e.message);
   }
+}
+
+function findFileRecursive(dir, matchName) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) { const r = findFileRecursive(full, matchName); if (r) return r; }
+    else if (matchName(entry.name)) return full;
+  }
+  return null;
 }
 
 // ----------------------------------------------------------------
