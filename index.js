@@ -402,6 +402,9 @@ const commands = [
       .addIntegerOption((o) => o.setName('age_min_jours').setDescription('Âge minimum du compte en jours (défaut 7)').setMinValue(0).setMaxValue(365))
       .addStringOption((o) => o.setName('action').setDescription('Action (kick ou timeout 24h)').addChoices({ name: 'kick', value: 'kick' }, { name: 'timeout 24h', value: 'timeout' }))),
 
+  new SlashCommandBuilder().setName('scanalts').setDescription('Trouver les comptes récents (alts probables) déjà sur le serveur, et agir dessus')
+    .addIntegerOption((o) => o.setName('age_min_jours').setDescription('Compte créé il y a moins de X jours = suspect (défaut : réglage /automod antialts, sinon 7)').setMinValue(0).setMaxValue(365)),
+
   new SlashCommandBuilder().setName('vider').setDescription('Vider complètement un salon (efface TOUT son historique, même au-delà de 14 jours)')
     .addChannelOption((o) => o.setName('salon').setDescription('Salon à vider (celui-ci par défaut)').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
 
@@ -504,6 +507,8 @@ const HELP_CATEGORIES = {
     text: [
       '`/automod antilien/antispam/antimention/motsinterdits/grosmots/antiraid`',
       '`/automod salonstrict` — mode "modérateur strict" dans un salon choisi : bloque tout lien et fichier, spam et raid supprimés automatiquement.',
+      "`/automod antialts` — bloque les comptes trop récents à l'arrivée.",
+      '`/scanalts [age_min_jours]` — cherche les comptes trop récents déjà présents sur le serveur, et propose Kick/Timeout/Ban/Annuler par bouton pour chacun.',
     ].join('\n'),
   },
   recherche: {
@@ -592,6 +597,39 @@ async function routeSelect(interaction) {
     } catch (e) {
       await interaction.editReply(`❌ Erreur (${e.message}).`);
     }
+    return;
+  }
+
+  if (interaction.customId.startsWith('scanalts_select_')) {
+    const g = db.get(interaction.guild.id);
+    if (!perms.canUseCommand(interaction.member, g, 'scanalts')) { await interaction.reply({ content: "❌ Tu n'as pas la permission d'utiliser `/scanalts`.", ephemeral: true }); return; }
+    const userId = interaction.values[0];
+    await interaction.deferReply({ ephemeral: true });
+    const target = await interaction.guild.members.fetch(userId).catch(() => null);
+    if (!target) { await interaction.editReply('❌ Ce membre a quitté le serveur entre-temps.'); return; }
+    const ageDays = Math.floor((Date.now() - target.user.createdTimestamp) / 86400000);
+    const embed = new EmbedBuilder().setColor(mod.COLORS.source)
+      .setTitle(`🕵️ ${target.user.tag}`)
+      .setDescription(`Compte créé il y a **${ageDays} jour(s)** (<t:${Math.floor(target.user.createdTimestamp / 1000)}:D>)\nA rejoint le serveur <t:${Math.floor(target.joinedTimestamp / 1000)}:R>.\n\nQue veux-tu faire ?`);
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`scanalts_act_kick_${userId}`).setLabel('Kick').setEmoji('👢').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`scanalts_act_timeout_${userId}`).setLabel('Timeout 24h').setEmoji('🔇').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`scanalts_act_ban_${userId}`).setLabel('Ban').setEmoji('🔨').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`scanalts_act_cancel_${userId}`).setLabel('Annuler').setEmoji('✖️').setStyle(ButtonStyle.Secondary),
+    );
+    await interaction.editReply({ embeds: [embed], components: [row] });
+    return;
+  }
+
+  if (interaction.customId.startsWith('scanalts_act_')) {
+    const rest = interaction.customId.slice('scanalts_act_'.length);
+    const sep = rest.indexOf('_');
+    const action = rest.slice(0, sep);
+    const userId = rest.slice(sep + 1);
+    if (action === 'cancel') { await interaction.update({ content: '✖️ Annulé, aucune action effectuée.', embeds: [], components: [] }); return; }
+    await interaction.deferUpdate();
+    const res = await executeModAction({ guild: interaction.guild, actorMember: interaction.member, action, user_id: userId, reason: 'Compte suspecté alt (scan /scanalts)', duration: action === 'timeout' ? '24h' : undefined });
+    await interaction.editReply({ content: res.error ? `❌ ${res.error}` : `✅ ${res.message}`, embeds: [], components: [] });
     return;
   }
 }
@@ -927,6 +965,48 @@ async function handleModCommand(interaction, guild, g) {
     if (sub === 'reset') { ai.resetHistory(interaction.channelId, interaction.user.id); await reply('🧹 Conversation oubliée.'); return; }
   }
 
+  if (cmd === 'scanalts') {
+    const am = g.automod;
+    const minDays = interaction.options.getInteger('age_min_jours') ?? am.antialts?.minAccountAgeDays ?? 7;
+    const threshold = Date.now() - minDays * 24 * 60 * 60 * 1000;
+
+    await reply('🔍 Analyse des membres en cours...');
+    try {
+      const members = await guild.members.fetch();
+      const suspects = members.filter((m) => !m.user.bot && m.user.createdTimestamp > threshold)
+        .map((m) => m).sort((a, b) => b.user.createdTimestamp - a.user.createdTimestamp);
+
+      if (!suspects.length) { await interaction.editReply(`✅ Aucun compte créé il y a moins de **${minDays}** jour(s) trouvé parmi les ${members.size} membres.`); return; }
+
+      const fmtAge = (ts) => { const d = Math.floor((Date.now() - ts) / 86400000); return d < 1 ? "< 1 jour" : `${d} jour(s)`; };
+      const MAX_SELECTABLE = 125; // 5 menus de 25 = limite Discord par message
+      const selectable = suspects.slice(0, MAX_SELECTABLE);
+      const rows = [];
+      for (let from = 0; from < selectable.length; from += 25) {
+        const chunk = selectable.slice(from, from + 25);
+        const menu = new StringSelectMenuBuilder()
+          .setCustomId(`scanalts_select_${rows.length}`)
+          .setPlaceholder(`Comptes ${from + 1} à ${from + chunk.length} sur ${suspects.length}...`)
+          .addOptions(chunk.map((m) => ({
+            label: m.user.tag.slice(0, 100),
+            value: m.id,
+            description: `Compte créé il y a ${fmtAge(m.user.createdTimestamp)} · a rejoint il y a ${fmtAge(m.joinedTimestamp)}`.slice(0, 100),
+          })));
+        rows.push(new ActionRowBuilder().addComponents(menu));
+      }
+      const lines = selectable.slice(0, 15).map((m) => `<@${m.id}> — créé il y a **${fmtAge(m.user.createdTimestamp)}**`);
+      const embed = new EmbedBuilder().setColor(mod.COLORS.source)
+        .setTitle(`🕵️ ${suspects.length} compte(s) suspect(s) (< ${minDays}j)`)
+        .setDescription(`${lines.join('\n')}${suspects.length > 15 ? `\n… et ${suspects.length - 15} autre(s).` : ''}\n\nChoisis un compte dans ${rows.length > 1 ? 'les menus' : 'le menu'} ci-dessous pour décider quoi en faire.${suspects.length > MAX_SELECTABLE ? `\n⚠️ Limite Discord : seuls les ${MAX_SELECTABLE} plus récents sont sélectionnables.` : ''}`)
+        .setFooter({ text: `${members.size} membre(s) analysé(s)` });
+      await interaction.editReply({ content: '', embeds: [embed], components: rows });
+    } catch (err) {
+      console.error('Erreur /scanalts :', err);
+      await interaction.editReply(`❌ Erreur pendant l'analyse : ${err.message || err}.`).catch(() => {});
+    }
+    return;
+  }
+
   if (cmd === 'vider') {
     const channel = interaction.options.getChannel('salon') || interaction.channel;
     await reply(`🧹 Vidage de ${channel} en cours (clonage + suppression de l'ancien salon)...`);
@@ -1107,7 +1187,7 @@ async function routeInteraction(interaction) {
     return;
   }
 
-  await interaction.deferReply({ ephemeral: ['warnings', 'modlogs', 'case', 'staffrole', 'warnactions', 'automod', 'ai', 'help', 'setmodlog', 'vider'].includes(interaction.commandName) });
+  await interaction.deferReply({ ephemeral: ['warnings', 'modlogs', 'case', 'staffrole', 'warnactions', 'automod', 'ai', 'help', 'setmodlog', 'vider', 'scanalts'].includes(interaction.commandName) });
   await handleModCommand(interaction, guild, g);
 }
 
