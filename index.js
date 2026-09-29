@@ -903,68 +903,95 @@ async function handleModCommand(interaction, guild, g) {
     const channel = interaction.options.getChannel('salon');
     const rawQuery = interaction.options.getString('recherche');
     const limite = interaction.options.getInteger('limite') || 10000;  // très haut pour fouiller le salon entier
-    const perms = channel.permissionsFor(botMember);
-    if (!perms?.has(PermissionFlagsBits.ViewChannel) || !perms?.has(PermissionFlagsBits.ReadMessageHistory)) { await reply(`❌ Je n'ai pas accès à l'historique de ${channel}.`); return; }
+
+    // Deux salons entrent en jeu : celui qu'on fouille (perms de LECTURE) et
+    // celui où la commande est tapée, c'est-à-dire là où le bot doit
+    // RÉPONDRE (perms d'ÉCRITURE : embeds + menus). Sans ça, Discord
+    // affiche sa propre carte générique "Permissions manquantes" au lieu
+    // d'un message clair — ce n'est PAS lié à /permuser ou /staffrole, qui
+    // ne gèrent que le droit d'utiliser la commande, pas les permissions du
+    // bot dans le salon Discord lui-même.
+    const readPerms = channel.permissionsFor(botMember);
+    if (!readPerms?.has(PermissionFlagsBits.ViewChannel) || !readPerms?.has(PermissionFlagsBits.ReadMessageHistory)) {
+      await reply(`❌ Je n'ai pas la permission de lire l'historique de ${channel} (il me faut **Voir le salon** + **Lire l'historique des messages** là-bas).`);
+      return;
+    }
+    const writePerms = interaction.channel?.permissionsFor(botMember);
+    if (!writePerms?.has(PermissionFlagsBits.EmbedLinks)) {
+      await reply(`❌ Il me manque la permission **Intégrer des liens** dans ${interaction.channel} pour répondre ici (rôle du bot → Permissions du salon).`);
+      return;
+    }
 
     await reply(`🔍 Fouille du salon entier en cours...`);
 
-    const normalize = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-    const terms = normalize(rawQuery).split(/\s+/).filter(Boolean);
+    try {
+      const normalize = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const terms = normalize(rawQuery).split(/\s+/).filter(Boolean);
 
-    let allFiles = [], fetched = 0, lastId;
-    while (fetched < limite) {
-      const batch = await channel.messages.fetch({ limit: Math.min(100, limite - fetched), ...(lastId ? { before: lastId } : {}) }).catch(() => null);
-      if (!batch || !batch.size) break;
-      fetched += batch.size;
-      lastId = batch.last().id;
-      for (const m of batch.values()) {
-        let attIndex = 0;
-        for (const a of m.attachments.values()) {
-          const fileName = normalize(a.name || '');
-          if (terms.every((t) => fileName.includes(t))) {
-            allFiles.push({ name: a.name, size: a.size, url: a.url, msgUrl: m.url, author: m.author.tag, createdAt: m.createdTimestamp, msgId: m.id, attIndex, channelId: channel.id });
+      let allFiles = [], fetched = 0, lastId;
+      while (fetched < limite) {
+        const batch = await channel.messages.fetch({ limit: Math.min(100, limite - fetched), ...(lastId ? { before: lastId } : {}) }).catch(() => null);
+        if (!batch || !batch.size) break;
+        fetched += batch.size;
+        lastId = batch.last().id;
+        for (const m of batch.values()) {
+          let attIndex = 0;
+          for (const a of m.attachments.values()) {
+            const fileName = normalize(a.name || '');
+            if (terms.every((t) => fileName.includes(t))) {
+              allFiles.push({ name: a.name, size: a.size, url: a.url, msgUrl: m.url, author: m.author.tag, createdAt: m.createdTimestamp, msgId: m.id, attIndex, channelId: channel.id });
+            }
+            attIndex += 1;
           }
-          attIndex += 1;
         }
+        if (batch.size < 100) break;  // fin du salon atteinte
       }
-      if (batch.size < 100) break;  // fin du salon atteinte
+
+      if (!allFiles.length) { await interaction.editReply(`🔍 Aucun fichier nommé "${rawQuery}" dans ${channel} (${fetched} message(s) fouillé(s)).`); return; }
+
+      allFiles.sort((a, b) => b.createdAt - a.createdAt);
+
+      // Un menu Discord = 25 options max, un message = 5 lignes max -> 125 fichiers
+      // sélectionnables. Au-delà, la liste complète est jointe en fichier texte.
+      const MAX_SELECTABLE = 125;
+      const selectable = allFiles.slice(0, MAX_SELECTABLE);
+      const fmtSize = (n) => (n / 1024 / 1024 > 1 ? `${(n / 1024 / 1024).toFixed(2)} MB` : `${(n / 1024).toFixed(1)} KB`);
+      const rows = [];
+      for (let from = 0; from < selectable.length; from += 25) {
+        const chunk = selectable.slice(from, from + 25);
+        const options = chunk.map((f, j) => ({
+          label: `${from + j + 1}. ${f.name}`.slice(0, 100),
+          value: `${f.msgId}:${f.attIndex}:${f.channelId}`,
+          description: `${fmtSize(f.size)} · ${f.author}`.slice(0, 100),
+        }));
+        const menu = new StringSelectMenuBuilder()
+          .setCustomId(`findcodes_select_${rows.length}`)
+          .setPlaceholder(`Fichiers ${from + 1} à ${from + chunk.length} sur ${allFiles.length}...`)
+          .addOptions(options);
+        rows.push(new ActionRowBuilder().addComponents(menu));
+      }
+
+      const tooMany = allFiles.length > MAX_SELECTABLE;
+      const embed = new EmbedBuilder().setColor(mod.COLORS.source)
+        .setTitle(`📎 \"${rawQuery}\" — ${allFiles.length} fichier(s) trouvé(s) dans #${channel.name}`)
+        .setDescription(`Choisis un fichier dans ${rows.length > 1 ? 'les menus' : 'le menu'} ci-dessous pour le télécharger (du plus récent au plus ancien).${tooMany ? `\nLimite Discord : seuls les ${MAX_SELECTABLE} plus récents sont dans les menus, la liste complète est dans le fichier joint.` : ''}`)
+        .setFooter({ text: `${fetched} message(s) fouillé(s) · total: ${allFiles.length} fichier(s)` });
+      const payload = { embeds: [embed], components: rows };
+      if (tooMany) {
+        if (!writePerms?.has(PermissionFlagsBits.AttachFiles)) {
+          await interaction.editReply({ embeds: [embed], components: rows, content: `⚠️ Il me manque la permission **Joindre des fichiers** ici, donc la liste complète (au-delà de ${MAX_SELECTABLE}) n'a pas pu être jointe.` });
+          return;
+        }
+        const listing = allFiles.map((f, i) => `${i + 1}. ${f.name} — ${fmtSize(f.size)} — ${f.author} — ${new Date(f.createdAt).toISOString()} — ${f.msgUrl}`).join('\n');
+        payload.files = [new AttachmentBuilder(Buffer.from(listing, 'utf8'), { name: 'findcodes-liste-complete.txt' })];
+      }
+      await interaction.editReply(payload);
+    } catch (err) {
+      // On évite que Discord affiche sa carte générique "Permissions manquantes"
+      // (souvent trompeuse) : ici, on donne le vrai message d'erreur.
+      console.error('Erreur /findcodes :', err);
+      await interaction.editReply(`❌ Erreur pendant la recherche : ${err.message || err}${err.code ? ` (code ${err.code})` : ''}.`).catch(() => {});
     }
-
-    if (!allFiles.length) { await interaction.editReply(`🔍 Aucun fichier nommé "${rawQuery}" dans ${channel} (${fetched} message(s) fouillé(s)).`); return; }
-
-    allFiles.sort((a, b) => b.createdAt - a.createdAt);
-
-    // Un menu Discord = 25 options max, un message = 5 lignes max -> 125 fichiers
-    // sélectionnables. Au-delà, la liste complète est jointe en fichier texte.
-    const MAX_SELECTABLE = 125;
-    const selectable = allFiles.slice(0, MAX_SELECTABLE);
-    const fmtSize = (n) => (n / 1024 / 1024 > 1 ? `${(n / 1024 / 1024).toFixed(2)} MB` : `${(n / 1024).toFixed(1)} KB`);
-    const rows = [];
-    for (let from = 0; from < selectable.length; from += 25) {
-      const chunk = selectable.slice(from, from + 25);
-      const options = chunk.map((f, j) => ({
-        label: `${from + j + 1}. ${f.name}`.slice(0, 100),
-        value: `${f.msgId}:${f.attIndex}:${f.channelId}`,
-        description: `${fmtSize(f.size)} · ${f.author}`.slice(0, 100),
-      }));
-      const menu = new StringSelectMenuBuilder()
-        .setCustomId(`findcodes_select_${rows.length}`)
-        .setPlaceholder(`Fichiers ${from + 1} à ${from + chunk.length} sur ${allFiles.length}...`)
-        .addOptions(options);
-      rows.push(new ActionRowBuilder().addComponents(menu));
-    }
-
-    const tooMany = allFiles.length > MAX_SELECTABLE;
-    const embed = new EmbedBuilder().setColor(mod.COLORS.source)
-      .setTitle(`📎 \"${rawQuery}\" — ${allFiles.length} fichier(s) trouvé(s) dans #${channel.name}`)
-      .setDescription(`Choisis un fichier dans ${rows.length > 1 ? 'les menus' : 'le menu'} ci-dessous pour le télécharger (du plus récent au plus ancien).${tooMany ? `\nLimite Discord : seuls les ${MAX_SELECTABLE} plus récents sont dans les menus, la liste complète est dans le fichier joint.` : ''}`)
-      .setFooter({ text: `${fetched} message(s) fouillé(s) · total: ${allFiles.length} fichier(s)` });
-    const payload = { embeds: [embed], components: rows };
-    if (tooMany) {
-      const listing = allFiles.map((f, i) => `${i + 1}. ${f.name} — ${fmtSize(f.size)} — ${f.author} — ${new Date(f.createdAt).toISOString()} — ${f.msgUrl}`).join('\n');
-      payload.files = [new AttachmentBuilder(Buffer.from(listing, 'utf8'), { name: 'findcodes-liste-complete.txt' })];
-    }
-    await interaction.editReply(payload);
     return;
   }
   if (cmd === 'help') {
