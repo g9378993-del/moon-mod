@@ -1,27 +1,8 @@
 const { EmbedBuilder } = require('discord.js');
 const db = require('./db');
-const { COLORS, postToModLog, caseEmbed, hasModPerms } = require('./moderation');
+const { COLORS, postToModLog, caseEmbed } = require('./moderation');
 
 const INVITE_RE = /(discord\.gg|discord(?:app)?\.com\/invite)\/[a-z0-9-]+/i;
-const ANY_URL_RE = /https?:\/\/\S+/i;
-
-// ------------------------------------------------------------------
-// MODE MODÉRATEUR PAR SALON ("/automod salonstrict") — quand activé sur un
-// salon, le bot s'y comporte comme un modérateur strict à plein temps :
-// tous les liens et fichiers sont bloqués, le spam individuel est coupé
-// plus vite, et un afflux soudain de messages (raid) déclenche une purge
-// automatique de tout ce qui arrive pendant quelques minutes.
-// ------------------------------------------------------------------
-const STRICT_RAID_THRESHOLD = 8;            // messages
-const STRICT_RAID_WINDOW_MS = 8000;         // en 8 secondes → raid
-const STRICT_RAID_DURATION_MS = 2 * 60000;  // purge automatique pendant 2 min
-const STRICT_SPAM_MAX = 3;                  // messages
-const STRICT_SPAM_WINDOW_MS = 5000;         // en 5 secondes → spam
-const STRICT_SPAM_TIMEOUT_MS = 5 * 60000;
-
-const strictBurstWindows = new Map();  // channelId -> timestamps[] (tout le monde, pour le raid)
-const strictSpamWindows = new Map();   // `${channelId}:${userId}` -> timestamps[]
-const strictRaidMode = new Map();      // channelId -> { until }
 
 // ------------------------------------------------------------------
 // Filtre intégré multilingue de gros mots ("/automod grosmots").
@@ -86,64 +67,7 @@ async function timeoutSafely(member, ms, reason) {
   try { await member.timeout(ms, reason); return true; } catch (e) { console.error('Timeout automod impossible :', e.message); return false; }
 }
 
-// Renvoie true si le message a été traité (supprimé) parce que ce salon est
-// en mode modération renforcée. Le staff n'est jamais bloqué par ce mode
-// (sinon impossible de calmer un salon en pleine crise).
-async function checkStrictChannel(message, g) {
-  if (hasModPerms(message.member, g)) return false;
-  const channelId = message.channelId;
-
-  // Mode raid déjà actif sur ce salon : on supprime tout jusqu'à expiration.
-  const raid = strictRaidMode.get(channelId);
-  if (raid && Date.now() < raid.until) { await deleteSafely(message); return true; }
-
-  // Anti-transfert (toute pièce jointe)
-  if (message.attachments.size > 0) {
-    await deleteSafely(message);
-    const c = db.addCase(g, { type: 'automod-delete', userId: message.author.id, moderatorId: null, reason: 'Transfert de fichier bloqué (salon en mode modération renforcée)' });
-    await db.save(message.guild.id);
-    await postToModLog(message.client, g, caseEmbed(c, message.guild.name));
-    return true;
-  }
-
-  // Anti-lien (tout lien, pas seulement les invitations Discord)
-  if (ANY_URL_RE.test(message.content || '')) {
-    await deleteSafely(message);
-    const c = db.addCase(g, { type: 'automod-delete', userId: message.author.id, moderatorId: null, reason: 'Lien bloqué (salon en mode modération renforcée)' });
-    await db.save(message.guild.id);
-    await postToModLog(message.client, g, caseEmbed(c, message.guild.name));
-    return true;
-  }
-
-  // Anti-spam renforcé (par personne, seuil plus bas que l'automod global)
-  const userKey = `${channelId}:${message.author.id}`;
-  const userCount = pushAndCount(strictSpamWindows, userKey, STRICT_SPAM_WINDOW_MS);
-  if (userCount > STRICT_SPAM_MAX) {
-    strictSpamWindows.set(userKey, []);
-    await deleteSafely(message);
-    const ok = await timeoutSafely(message.member, STRICT_SPAM_TIMEOUT_MS, 'Spam dans un salon en mode modération renforcée');
-    const c = db.addCase(g, { type: 'automod-timeout', userId: message.author.id, moderatorId: null, reason: `Spam dans un salon surveillé (${userCount} messages en ${STRICT_SPAM_WINDOW_MS / 1000}s)`, extra: { applied: ok } });
-    await db.save(message.guild.id);
-    await postToModLog(message.client, g, caseEmbed(c, message.guild.name));
-    return true;
-  }
-
-  // Détection de raid : afflux soudain de messages (tous auteurs confondus)
-  const burstCount = pushAndCount(strictBurstWindows, channelId, STRICT_RAID_WINDOW_MS);
-  if (burstCount > STRICT_RAID_THRESHOLD) {
-    strictBurstWindows.set(channelId, []);
-    strictRaidMode.set(channelId, { until: Date.now() + STRICT_RAID_DURATION_MS });
-    await deleteSafely(message);
-    const embed = new EmbedBuilder().setColor(COLORS.raid).setTitle('🚨 Raid détecté dans un salon surveillé')
-      .setDescription(`${burstCount} messages en ${STRICT_RAID_WINDOW_MS / 1000}s dans <#${channelId}>. Purge automatique activée pendant ${STRICT_RAID_DURATION_MS / 60000} minutes (tout message non-staff y sera supprimé).`);
-    await postToModLog(message.client, g, embed);
-    return true;
-  }
-
-  return false;
-}
-
-
+// Appelé sur CHAQUE message d'un salon texte. Renvoie true si le message a
 // été traité par l'automod (supprimé), pour que l'appelant arrête là (par
 // exemple ne pas aussi lancer le chat IA sur un message qui vient d'être
 // supprimé pour lien/insulte).
@@ -152,12 +76,6 @@ async function checkMessage(message) {
   const g = db.get(message.guild.id);
   const am = g.automod;
   const content = message.content || '';
-
-  // ---- Mode modérateur strict par salon (prioritaire sur tout le reste) ----
-  if ((am.strictChannels || []).includes(message.channelId)) {
-    const handled = await checkStrictChannel(message, g);
-    if (handled) return true;
-  }
 
   // ---- Anti-lien (invitations Discord) ----
   if (am.antiLink.enabled && INVITE_RE.test(content)) {
@@ -260,4 +178,28 @@ async function checkJoin(member) {
   }
 }
 
-module.exports = { checkMessage, checkJoin, INVITE_RE };
+// Anti-alts : kick/timeout les comptes suspects d'être des alts (trop jeunes)
+async function checkAntialts(member) {
+  const g = db.get(member.guild.id);
+  const aa = g.automod?.antialts;
+  if (!aa || !aa.enabled) return;
+
+  const accountAgeDays = (Date.now() - member.user.createdTimestamp) / (1000 * 60 * 60 * 24);
+  if (accountAgeDays > aa.minAccountAgeDays) return; // compte assez vieux
+
+  try {
+    const reason = `Anti-alts : compte créé il y a ${accountAgeDays.toFixed(1)} jours (seuil: ${aa.minAccountAgeDays}j)`;
+    if (aa.action === 'kick') {
+      await member.kick(reason);
+    } else {
+      await member.timeout(24 * 60 * 60 * 1000, reason); // 24h timeout
+    }
+    const c = db.addCase(g, { type: 'automod-delete', userId: member.id, moderatorId: null, reason });
+    await db.save(member.guild.id);
+    await postToModLog(member.client, g, caseEmbed(c, member.guild.name));
+  } catch (e) {
+    console.error('Action anti-alts impossible :', e.message);
+  }
+}
+
+module.exports = { checkMessage, checkJoin, checkAntialts, INVITE_RE };

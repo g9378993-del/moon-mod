@@ -24,7 +24,7 @@ function defaultGuild() {
       badWords: { enabled: false, words: [] },
       profanity: { enabled: true },  // filtre intégré multilingue de gros mots (/automod grosmots)
       antiRaid: { enabled: true, joinThreshold: 6, windowSeconds: 20, minAccountAgeDays: 3, action: 'timeout' }, // action: 'timeout' | 'kick' | 'alert_only'
-      strictChannels: [],  // salons en "mode modérateur" (/automod salonstrict) : anti-lien total, anti-fichier, anti-spam et anti-raid renforcés
+      antialts: { enabled: false, minAccountAgeDays: 7, action: 'kick' }, // action: 'kick' | 'timeout'
     },
     warnThresholds: [
       { count: 3, action: 'timeout', minutes: 60 },
@@ -66,7 +66,7 @@ function normalizeGuild(data) {
       badWords: { ...base.automod.badWords, ...(d.automod?.badWords || {}) },
       profanity: { ...base.automod.profanity, ...(d.automod?.profanity || {}) },
       antiRaid: { ...base.automod.antiRaid, ...(d.automod?.antiRaid || {}) },
-      strictChannels: [...(d.automod?.strictChannels || [])],
+      antialts: { ...base.automod.antialts, ...(d.automod?.antialts || {}) },
     },
     tickets: {
       ...base.tickets,

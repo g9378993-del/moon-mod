@@ -354,7 +354,11 @@ const commands = [
       .addStringOption((o) => o.setName('action').setDescription('Action sur les comptes suspects').addChoices({ name: 'Timeout 30 min', value: 'timeout' }, { name: 'Kick', value: 'kick' }, { name: 'Alerte seulement', value: 'alert_only' })))
     .addSubcommand((s) => s.setName('salonstrict').setDescription('Mode modérateur strict dans UN salon (anti-lien, anti-fichier, anti-spam, anti-raid)')
       .addChannelOption((o) => o.setName('salon').setDescription('Le salon à surveiller').setRequired(true))
-      .addStringOption((o) => o.setName('etat').setDescription('on/off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' }))),
+      .addStringOption((o) => o.setName('etat').setDescription('on/off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' })))
+    .addSubcommand((s) => s.setName('antialts').setDescription('Bloquer les nouveaux comptes (alts) de rejoindre le serveur')
+      .addStringOption((o) => o.setName('etat').setDescription('on/off').setRequired(true).addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' }))
+      .addIntegerOption((o) => o.setName('age_min_jours').setDescription('Âge minimum du compte en jours (défaut 7)').setMinValue(0).setMaxValue(365))
+      .addStringOption((o) => o.setName('action').setDescription('Action (kick ou timeout 24h)').addChoices({ name: 'kick', value: 'kick' }, { name: 'timeout 24h', value: 'timeout' }))),
 
   new SlashCommandBuilder().setName('vider').setDescription('Vider complètement un salon (efface TOUT son historique, même au-delà de 14 jours)')
     .addChannelOption((o) => o.setName('salon').setDescription('Salon à vider (celui-ci par défaut)').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
@@ -847,6 +851,20 @@ async function handleModCommand(interaction, guild, g) {
         : `✅ Mode modérateur strict désactivé dans ${channel}.`);
       return;
     }
+    if (sub === 'antialts') {
+      am.antialts = am.antialts || { enabled: false, minAccountAgeDays: 7, action: 'kick' };
+      const on = interaction.options.getString('etat') === 'on';
+      if (on) {
+        am.antialts.enabled = true;
+        if (interaction.options.getInteger('age_min_jours') !== null) am.antialts.minAccountAgeDays = interaction.options.getInteger('age_min_jours');
+        if (interaction.options.getString('action')) am.antialts.action = interaction.options.getString('action');
+      } else {
+        am.antialts.enabled = false;
+      }
+      await db.save(guild.id);
+      await reply(`✅ Anti-alts : ${am.antialts.enabled ? `activé (âge min: ${am.antialts.minAccountAgeDays}j, action: ${am.antialts.action})` : 'désactivé'}.`);
+      return;
+    }
   }
 
   if (cmd === 'ai') {
@@ -1093,7 +1111,11 @@ client.on(Events.MessageCreate, async (message) => {
 });
 
 client.on(Events.GuildMemberAdd, async (member) => {
-  try { await dbReadyPromise; await automod.checkJoin(member); } catch (e) { console.error('Erreur GuildMemberAdd :', e); }
+  try { 
+    await dbReadyPromise; 
+    await automod.checkJoin(member);
+    await automod.checkAntialts(member);
+  } catch (e) { console.error('Erreur GuildMemberAdd :', e); }
 });
 
 // ----------------------------------------------------------------
