@@ -14,7 +14,7 @@
 // ================================================================
 const {
   SlashCommandBuilder, ChannelType, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
-  ModalBuilder, TextInputBuilder, TextInputStyle, PermissionFlagsBits,
+  ModalBuilder, TextInputBuilder, TextInputStyle, PermissionFlagsBits, AttachmentBuilder,
 } = require('discord.js');
 const db = require('./db');
 const perms = require('./perms');
@@ -46,10 +46,12 @@ function listingEmbed(listing) {
   return e;
 }
 function listingRow(listing) {
-  if (listing.status === 'cancelled') return [];
+  const createBtn = new ButtonBuilder().setCustomId('trade:panel:create').setLabel('Create Trade').setEmoji('➕').setStyle(ButtonStyle.Danger);
+  if (listing.status === 'cancelled') return [new ActionRowBuilder().addComponents(createBtn)];
   return [new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`trade:offer:${listing.id}`).setLabel('Trade').setEmoji('🔄').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(`trade:cancel:${listing.id}`).setLabel('Retirer').setEmoji('🗑️').setStyle(ButtonStyle.Secondary),
+    createBtn,
   )];
 }
 function panelPayload(guild, t) {
@@ -104,6 +106,8 @@ async function autocomplete(interaction) {
 
 // Termine la création d'une annonce (utilisé par /brainrot post ET le
 // formulaire du panel) une fois qu'on a nom / photo / etc.
+// fields.imageFile (optionnel) : un AttachmentBuilder à joindre au message
+// (cas du panel, où la photo doit être ré-uploadée — voir plus bas).
 async function publishListing(guild, t, targetChannel, owner, fields) {
   t.seq += 1;
   const listing = {
@@ -111,7 +115,16 @@ async function publishListing(guild, t, targetChannel, owner, fields) {
     itemName: fields.itemName, wants: fields.wants || '', description: fields.description || '',
     imageUrl: fields.imageUrl, status: 'open', createdAt: Date.now(), channelId: targetChannel.id, messageId: null,
   };
-  const msg = await targetChannel.send({ embeds: [listingEmbed(listing)], components: listingRow(listing) });
+  const payload = { embeds: [listingEmbed(listing)], components: listingRow(listing) };
+  if (fields.imageFile) payload.files = [fields.imageFile];
+  const msg = await targetChannel.send(payload);
+  // Si on a joint un fichier (cas du panel), on remplace l'URL "attachment://"
+  // par l'URL Discord réelle de la pièce jointe sur CE message (stable tant
+  // que ce message n'est pas supprimé), pour les futurs affichages (DM, etc.).
+  if (fields.imageFile) {
+    const att = msg.attachments?.first?.();
+    if (att) listing.imageUrl = att.url;
+  }
   listing.messageId = msg.id;
   t.listings[listing.id] = listing;
   await db.save(guild.id);
@@ -190,7 +203,7 @@ async function handleCommand(interaction) {
     await db.save(guild.id);
     const ch = guild.channels.cache.get(listing.channelId);
     const msg = ch ? await ch.messages.fetch(listing.messageId).catch(() => null) : null;
-    if (msg) await msg.edit({ embeds: [listingEmbed(listing)], components: [] }).catch(() => {});
+    if (msg) await msg.edit({ embeds: [listingEmbed(listing)], components: listingRow(listing) }).catch(() => {});
     await reply(`✅ Annonce **${listing.itemName}** retirée.`);
     return;
   }
@@ -211,10 +224,28 @@ function collectPhotoAndPublish(interaction, guild, t, fields) {
       // On revérifie la limite au cas où une autre annonce aurait été créée entre-temps.
       const already = findOpenListing(t, interaction.user.id);
       if (already) { await interaction.editReply(`❌ Tu as déjà une annonce active : **${already.itemName}**. Retire-la d'abord.`); m.delete().catch(() => {}); return; }
-      const photoUrl = m.attachments.first().url;
+
+      // L'URL Discord d'une pièce jointe ne fonctionne plus une fois son
+      // message supprimé (or on supprime le message-photo juste après, pour
+      // garder le salon propre) : on télécharge donc l'image AVANT de le
+      // supprimer, pour la ré-uploader directement sur le message de l'annonce.
+      const originalAttachment = m.attachments.first();
+      const filename = (originalAttachment.name || 'brainrot.png').replace(/[^\w.\-]/g, '_');
+      let imageFile;
+      try {
+        const res = await fetch(originalAttachment.url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const buf = Buffer.from(await res.arrayBuffer());
+        imageFile = new AttachmentBuilder(buf, { name: filename });
+      } catch (dlErr) {
+        console.error('Erreur téléchargement photo /trade :', dlErr);
+        await interaction.editReply('❌ Je n\'ai pas réussi à récupérer ta photo, réessaie (reclique sur **Create Trade**).');
+        return;
+      }
+
       const targetChannel = t.channelId ? (guild.channels.cache.get(t.channelId) || channel) : channel;
-      const { listing } = await publishListing(guild, t, targetChannel, interaction.user, { ...fields, imageUrl: photoUrl });
-      m.delete().catch(() => {}); // on nettoie le salon, la photo vit maintenant dans l'annonce
+      const { listing } = await publishListing(guild, t, targetChannel, interaction.user, { ...fields, imageUrl: `attachment://${filename}`, imageFile });
+      m.delete().catch(() => {}); // on nettoie le salon, la photo vit maintenant sur le message de l'annonce
       await interaction.editReply(`✅ Annonce **${listing.itemName}** publiée dans <#${targetChannel.id}> !`);
     } catch (err) {
       console.error('Erreur publication annonce (panel) :', err);
@@ -286,7 +317,7 @@ async function handleComponent(interaction) {
     if (listing.status !== 'open') { await eph('❌ Déjà retirée.'); return; }
     listing.status = 'cancelled';
     await db.save(guild.id);
-    await interaction.update({ embeds: [listingEmbed(listing)], components: [] });
+    await interaction.update({ embeds: [listingEmbed(listing)], components: listingRow(listing) });
     return;
   }
 
