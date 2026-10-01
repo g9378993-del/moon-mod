@@ -1,22 +1,3 @@
-// ================================================================
-// brainrot-finder.js — Brainrot Finder
-//
-//  Fonctionnement :
-//  • Le staff gère un catalogue de brainrots via /brainrotfinder
-//    (add, remove, edit, list). Chaque entrée a :
-//      - nom           : nom du brainrot
-//      - tier          : LOW / MID / HIGH  (vitesse en ms/frame)
-//      - description   : courte description (optionnel)
-//      - invite        : lien d'invitation Discord du serveur
-//      - imageUrl      : URL de l'image/gif du brainrot
-//  • N'importe quel membre peut parcourir le catalogue via
-//    /brainrotfind (avec filtre par tier).
-//  • Le bouton "Join" est RÉSERVÉ aux membres qui ont le rôle
-//    premium configuré. Les autres voient le bouton grisé avec
-//    un message d'explication.
-//  • /brainrotconfig premium  : définir le rôle premium
-//  • /brainrotconfig voir     : voir la config actuelle
-// ================================================================
 const {
   SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder,
   ButtonStyle, StringSelectMenuBuilder,
@@ -28,7 +9,7 @@ const RED = 0xFF0000;
 const TIERS = ['LOW', 'MID', 'HIGH'];
 const TIER_EMOJI = { LOW: '🟢', MID: '🟡', HIGH: '🔴' };
 const TIER_DESC = { LOW: 'Lent (beaucoup de ms/frame)', MID: 'Moyen', HIGH: 'Rapide (peu de ms/frame)' };
-const PAGE_SIZE = 1; // un brainrot à la fois (embed + image + bouton)
+const PAGE_SIZE = 1;
 
 function store(g) {
   if (!g.brainrotFinder) g.brainrotFinder = {};
@@ -59,7 +40,7 @@ function brainrotEmbed(entry, idx, total, premiumRoleId, isBrowser = false) {
 function brainrotRow(entry, idx, total, isPremium, premiumRoleId, tier) {
   const filterVal = tier ? `tier:${tier}` : 'all';
   const row1 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`bf:prev:${idx}:${filterVal}`).setLabel('◀ Précédent').setStyle(ButtonStyle.Secondary).setDisabled(idx <= 0),
+    new ButtonBuilder().setCustomId(`bf:prev:${idx}:${filterVal}`).setLabel('◀ Precedent').setStyle(ButtonStyle.Secondary).setDisabled(idx <= 0),
     new ButtonBuilder().setCustomId(`bf:next:${idx}:${filterVal}`).setLabel('Suivant ▶').setStyle(ButtonStyle.Secondary).setDisabled(idx >= total - 1),
   );
   const joinBtn = new ButtonBuilder().setLabel('🔗 Join').setStyle(ButtonStyle.Danger);
@@ -72,15 +53,8 @@ function brainrotRow(entry, idx, total, isPremium, premiumRoleId, tier) {
   return [row1, row2];
 }
 
-// ----------------------------------------------------------------
-// COMMANDES
-// ----------------------------------------------------------------
-const tierOpt = (o) => o.setName('tier').setDescription('Tier du brainrot').setRequired(true)
-  .addChoices({ name: '🟢 LOW (lent)', value: 'LOW' }, { name: '🟡 MID', value: 'MID' }, { name: '🔴 HIGH (rapide)', value: 'HIGH' });
-const idOpt = (o) => o.setName('id').setDescription('ID du brainrot (voir /brainrotfinder list)').setRequired(true).setAutocomplete(true);
-
 const commands = [
-  new SlashCommandBuilder().setName('brainrotfinder').setDescription('(Staff) Gérer le catalogue de brainrots')
+  new SlashCommandBuilder().setName('brainrotfinder').setDescription('(Staff) Gerer le catalogue de brainrots')
   .addSubcommand(s => s.setName('add').setDescription('Ajouter un brainrot au catalogue')
     .addStringOption(o => o.setName('nom').setDescription('Nom du brainrot').setRequired(true).setMaxLength(80))
     .addStringOption(o => o.setName('tier').setDescription('Tier du brainrot').setRequired(true)
@@ -107,8 +81,8 @@ const commands = [
     )).setDMPermission(false),
 
   new SlashCommandBuilder().setName('brainrotconfig').setDescription('(Staff) Configurer le Brainrot Finder')
-    .addSubcommand(s => s.setName('premium').setDescription('Définir le rôle premium requis pour Join (vide = tout le monde)')
-      .addRoleOption(o => o.setName('role').setDescription('Rôle premium')))
+    .addSubcommand(s => s.setName('premium').setDescription('Definir le role premium requis pour Join (vide = tout le monde)')
+      .addRoleOption(o => o.setName('role').setDescription('Role premium')))
     .addSubcommand(s => s.setName('voir').setDescription('Voir la configuration actuelle'))
     .setDMPermission(false),
 ].map(c => c.toJSON());
@@ -126,9 +100,6 @@ async function autocomplete(interaction) {
   ).catch(() => {});
 }
 
-// ----------------------------------------------------------------
-// HANDLER COMMANDES
-// ----------------------------------------------------------------
 async function handleCommand(interaction) {
   const guild = interaction.guild;
   const g = db.get(guild.id);
@@ -137,24 +108,22 @@ async function handleCommand(interaction) {
   const sub = interaction.options.getSubcommand(false);
   const isStaff = perms.hasStaff(interaction.member, g);
 
-  // ---- /brainrotconfig ----
   if (name === 'brainrotconfig') {
-    if (!isStaff) { await interaction.reply({ content: '❌ Réservé au staff.', ephemeral: true }); return; }
+    if (!isStaff) { await interaction.reply({ content: '❌ Reserve au staff.', ephemeral: true }); return; }
     await interaction.deferReply({ ephemeral: true });
     if (sub === 'premium') {
       const role = interaction.options.getRole('role');
       b.premiumRoleId = role ? role.id : null;
       await db.save(guild.id);
-      await interaction.editReply(role ? `✅ Rôle premium : <@&${role.id}>. Seuls ces membres pourront cliquer **Join**.` : '✅ Restriction retirée — tout le monde peut rejoindre.');
+      await interaction.editReply(role ? `✅ Role premium : <@&${role.id}>. Seuls ces membres pourront cliquer **Join**.` : '✅ Restriction retiree — tout le monde peut rejoindre.');
       return;
     }
-    await interaction.editReply(`⚙️ Rôle premium : ${b.premiumRoleId ? `<@&${b.premiumRoleId}>` : 'Aucun (tout le monde peut Join)'}\n📦 Brainrots dans le catalogue : **${b.catalogue.length}**`);
+    await interaction.editReply(`⚙️ Role premium : ${b.premiumRoleId ? `<@&${b.premiumRoleId}>` : 'Aucun (tout le monde peut Join)'}\n📦 Brainrots dans le catalogue : **${b.catalogue.length}**`);
     return;
   }
 
-  // ---- /brainrotfinder (staff) ----
   if (name === 'brainrotfinder') {
-    if (!isStaff) { await interaction.reply({ content: '❌ Réservé au staff.', ephemeral: true }); return; }
+    if (!isStaff) { await interaction.reply({ content: '❌ Reserve au staff.', ephemeral: true }); return; }
     await interaction.deferReply({ ephemeral: true });
     const reply = t => interaction.editReply({ content: t, allowedMentions: { parse: [] } });
 
@@ -171,7 +140,7 @@ async function handleCommand(interaction) {
       };
       b.catalogue.push(entry);
       await db.save(guild.id);
-      await reply(`✅ **${entry.name}** [${entry.tier}] ajouté au catalogue (#${entry.id}).`);
+      await reply(`✅ **${entry.name}** [${entry.tier}] ajoute au catalogue (#${entry.id}).`);
       return;
     }
 
@@ -181,7 +150,7 @@ async function handleCommand(interaction) {
     if (sub === 'remove') {
       b.catalogue = b.catalogue.filter(e => e !== entry);
       await db.save(guild.id);
-      await reply(`✅ **${entry.name}** supprimé du catalogue.`);
+      await reply(`✅ **${entry.name}** supprime du catalogue.`);
       return;
     }
     if (sub === 'edit') {
@@ -192,7 +161,7 @@ async function handleCommand(interaction) {
       if (o.getString('image')) entry.imageUrl = o.getString('image');
       if (o.getString('description') !== null) entry.description = o.getString('description') === '-' ? '' : o.getString('description');
       await db.save(guild.id);
-      await reply(`✅ **${entry.name}** [${entry.tier}] modifié.`);
+      await reply(`✅ **${entry.name}** [${entry.tier}] modifie.`);
       return;
     }
     if (sub === 'list') {
@@ -208,7 +177,6 @@ async function handleCommand(interaction) {
     }
   }
 
-  // ---- /brainrotfind (tout le monde) ----
   if (name === 'brainrotfind') {
     await interaction.deferReply();
     const tierFilter = interaction.options.getString('tier') || 'ALL';
@@ -229,9 +197,6 @@ async function handleCommand(interaction) {
   }
 }
 
-// ----------------------------------------------------------------
-// BOUTONS (navigation + Join premium)
-// ----------------------------------------------------------------
 async function handleComponent(interaction) {
   if (!interaction.isButton()) return;
   const guild = interaction.guild;
@@ -241,16 +206,14 @@ async function handleComponent(interaction) {
   const id = interaction.customId;
   const eph = t => interaction.reply({ content: t, ephemeral: true, allowedMentions: { parse: [] } });
 
-  // Bouton Join sans premium
   if (id.startsWith('bf:nopremium:')) {
-    const roleMention = b.premiumRoleId ? `<@&${b.premiumRoleId}>` : 'le rôle premium';
-    await eph(`🔒 Le bouton **Join** est réservé aux membres ${roleMention}.\nObtiens ce rôle pour accéder aux liens d'invitation !`);
+    const roleMention = b.premiumRoleId ? `<@&${b.premiumRoleId}>` : 'le role premium';
+    await eph(`🔒 Le bouton **Join** est reserve aux membres ${roleMention}.\nObtiens ce role pour acceder aux liens d\'invitation !`);
     return;
   }
 
-  // Navigation prev/next
   if (id.startsWith('bf:prev:') || id.startsWith('bf:next:')) {
-    const parts = id.split(':'); // bf : prev/next : idx : filter
+    const parts = id.split(':');
     const dir = parts[1];
     let idx = parseInt(parts[2], 10);
     const filterVal = parts[3] || 'all';

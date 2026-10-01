@@ -448,24 +448,21 @@ const ownerCommands = [
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
   const body = [...commands, ...ownerCommands];
+  console.log(`📦 Total commandes a enregistrer: ${body.length} (${commands.length} + ${ownerCommands.length})`);
+  console.log(`   Commandes BF: ${body.filter(c => c.name && c.name.startsWith('brainrot')).length}`);
+  console.log(`   Noms: ${body.map(c => c.name).join(', ')}`);
 
-  // Vide les anciennes commandes globales (enregistrées avant ce correctif) —
-  // sinon elles restent affichées EN PLUS des commandes par serveur, ce qui
-  // donne des doublons dans Discord.
   try {
     await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: [] });
-    console.log('Anciennes commandes globales supprimées (pour éviter les doublons).');
-  } catch (err) { console.error('Erreur suppression des commandes globales :', err); }
+    console.log('✓ Anciennes commandes globales supprimees.');
+  } catch (err) { console.error('❌ Erreur suppression commandes globales:', err.message); }
 
-  // On enregistre UNIQUEMENT par serveur (pas en global) : c'est instantané,
-  // alors que le global peut prendre jusqu'à 1h et cause des doublons si les
-  // deux sont actifs en même temps.
   for (const guild of client.guilds.cache.values()) {
     try {
       await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, guild.id), { body });
-      console.log(`Commandes enregistrées instantanément sur ${guild.name} (${guild.id}).`);
+      console.log(`✓ ${body.length} commandes enregistrees sur ${guild.name}`);
     } catch (err) {
-      console.error(`Erreur enregistrement des commandes sur ${guild.name} (${guild.id}) :`, err);
+      console.error(`❌ Erreur sur ${guild.name}:`, err.message);
     }
   }
 }
