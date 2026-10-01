@@ -13,6 +13,7 @@ const ai = require('./ai');
 const economy = require('./economy');
 const perms = require('./perms');
 const trade = require('./trade');
+const bf = require('./brainrot-finder');
 const {
   Client, GatewayIntentBits, Partials, Events, PermissionFlagsBits, ChannelType,
   EmbedBuilder, REST, Routes, SlashCommandBuilder, AttachmentBuilder,
@@ -436,7 +437,7 @@ const commands = [
   new SlashCommandBuilder().setName('help').setDescription('Voir toutes les commandes'),
 ].map((c) => c.setDMPermission(false).toJSON());
 
-commands.push(...economy.commands, ...perms.commands, ...trade.commands);
+commands.push(...economy.commands, ...perms.commands, ...trade.commands, ...bf.commands);
 perms.setCommandNames(commands.map((c) => c.name));
 
 
@@ -1189,6 +1190,7 @@ async function routeInteraction(interaction) {
     return;
   }
 
+  if (bf.isBFCommand(interaction.commandName)) { await bf.handleCommand(interaction); return; }
   if (economy.isEconomyCommand(interaction.commandName)) { await economy.handleCommand(interaction); return; }
   if (trade.isTradeCommand(interaction.commandName)) { await trade.handleCommand(interaction); return; }
 
@@ -1214,9 +1216,10 @@ async function routeInteraction(interaction) {
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     await dbReadyPromise;
-    if (interaction.isAutocomplete()) { if (perms.isPermCommand(interaction.commandName)) await perms.autocomplete(interaction); else if (trade.isTradeCommand(interaction.commandName)) await trade.autocomplete(interaction); else await economy.autocomplete(interaction); return; }
+    if (interaction.isAutocomplete()) { if (perms.isPermCommand(interaction.commandName)) await perms.autocomplete(interaction); else if (trade.isTradeCommand(interaction.commandName)) await trade.autocomplete(interaction); else if (bf.isBFCommand(interaction.commandName)) await bf.autocomplete(interaction); else await economy.autocomplete(interaction); return; }
     if (interaction.customId && interaction.customId.startsWith('eco:')) { await economy.handleComponent(interaction); return; }
     if (interaction.customId && interaction.customId.startsWith('trade:')) { await trade.handleComponent(interaction); return; }
+    if (interaction.customId && interaction.customId.startsWith('bf:')) { await bf.handleComponent(interaction); return; }
     if (interaction.isStringSelectMenu() || interaction.isButton()) { await routeSelect(interaction); return; }
     await routeInteraction(interaction);
   } catch (err) {
