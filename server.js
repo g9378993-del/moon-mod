@@ -51,9 +51,19 @@ function auth(req, res, next) {
 app.get('/',        (req, res) => res.send('Moon Bot en ligne.'));
 app.get('/health',  (req, res) => res.json({ ok: true, uptime: process.uptime() }));
 
-// Dashboard HTML — servi directement par le bot
+// Dashboard HTML — lu au démarrage, servi en mémoire
+const fs = require('fs');
+let _dashboardHtml = null;
+try {
+  _dashboardHtml = fs.readFileSync(path.join(__dirname, 'dashboard.html'), 'utf8');
+  console.log('[dashboard] dashboard.html chargé OK');
+} catch(e) {
+  console.error('[dashboard] dashboard.html introuvable :', e.message);
+}
 app.get('/dashboard', (req, res) => {
-  res.sendFile(path.join(__dirname, 'dashboard.html'));
+  if (!_dashboardHtml) return res.status(404).send('dashboard.html introuvable a la racine du projet.');
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(_dashboardHtml);
 });
 
 // ── Helper — guild ou 404 ─────────────────────────────────────────
