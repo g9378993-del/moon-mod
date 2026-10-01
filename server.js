@@ -14,6 +14,21 @@ let _db     = null;
 function setClient(c) { _client = c; }
 function setDb(d)     { _db = d; }
 
+// ── Buffer de logs interne (500 entrées max) ───────────────────────
+const _logs = [];
+const MAX_LOGS = 500;
+function pushLog(type, html) {
+  _logs.unshift({ type, html, ts: Date.now() });
+  if (_logs.length > MAX_LOGS) _logs.pop();
+}
+
+// Stats IA (compteurs session)
+const _aiStats = { total: 0, blocked: 0 };
+function recordAiExchange({ blocked = false } = {}) {
+  _aiStats.total++;
+  if (blocked) _aiStats.blocked++;
+}
+
 // ── CORS ───────────────────────────────────────────────────────────
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin',  '*');
@@ -279,8 +294,19 @@ app.get('/api/db', auth, (req, res) => {
   res.json(_db.getStatus());
 });
 
+// ── Logs live (pushLog depuis le bot) ─────────────────────────────
+app.get('/api/live-logs', auth, (req, res) => {
+  const limit = parseInt(req.query.limit) || 100;
+  res.json(_logs.slice(0, limit));
+});
+
+// ── Stats IA session ──────────────────────────────────────────────
+app.get('/api/ai-stats', auth, (req, res) => {
+  res.json({ ..._aiStats, uptimeSec: Math.floor(process.uptime()) });
+});
+
 // ── Démarrage ─────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`[dashboard] Serveur démarré sur le port ${PORT} — dashboard sur /dashboard`));
 
-module.exports = { app, setClient, setDb };
+module.exports = { app, setClient, setDb, pushLog, recordAiExchange };

@@ -207,6 +207,7 @@ html,body{height:100%;overflow:hidden;font-family:'Inter',sans-serif;background:
     <div class="ping" id="sping">⚡ --ms</div>
   </header>
 
+  <div id="bot-warn" style="display:none;background:rgba(247,164,29,.1);border-bottom:1px solid rgba(247,164,29,.25);padding:9px 18px;font-size:12px;color:var(--o);flex-shrink:0;z-index:99;position:relative"></div>
   <div class="body">
     <div class="ov" id="ov" onclick="closeSb()"></div>
     <nav class="sb" id="sb">
@@ -224,6 +225,8 @@ html,body{height:100%;overflow:hidden;font-family:'Inter',sans-serif;background:
       <div class="ni" data-s="automod"><span class="ic">🤖</span> AutoMod</div>
       <div class="ni" data-s="aicfg"><span class="ic">✨</span> Chat IA</div>
       <div class="ni" data-s="tickets"><span class="ic">🎫</span> Tickets</div>
+      <div class="sbt">Dashboard</div>
+      <div class="ni" data-s="connexion"><span class="ic">🔌</span> Connexion bot</div>
     </nav>
 
     <main class="main" id="main">
@@ -415,6 +418,34 @@ html,body{height:100%;overflow:hidden;font-family:'Inter',sans-serif;background:
         </div>
       </section>
 
+      <!-- CONNEXION BOT -->
+      <section id="s-connexion" class="sec">
+        <h2 class="st">Connexion bot</h2>
+        <p class="ss">Configure l'URL de ton bot Render pour connecter le dashboard en live.</p>
+        <div class="card">
+          <div class="ct">🔌 URL du bot</div>
+          <div class="sr"><div class="srl">URL Render</div><input class="inp" id="cfg-url" placeholder="https://moon-bot.onrender.com" style="flex:1"></div>
+          <div style="margin-top:12px;display:flex;gap:9px;flex-wrap:wrap">
+            <button class="btn" onclick="saveUrl()">Sauvegarder & tester</button>
+          </div>
+          <div id="cfg-status" style="margin-top:12px;font-size:12px;color:var(--td)"></div>
+        </div>
+        <div class="card">
+          <div class="ct">📋 Instructions</div>
+          <div style="font-size:13px;color:var(--tm);line-height:1.8">
+            <b style="color:var(--t)">1.</b> Remplace <code style="background:var(--bg);padding:2px 6px;border-radius:4px;color:var(--o)">server.js</code> par le nouveau fichier livré.<br>
+            <b style="color:var(--t)">2.</b> Dans <code style="background:var(--bg);padding:2px 6px;border-radius:4px;color:var(--o)">index.js</code>, ajoute ces 3 lignes dans l'event <code style="background:var(--bg);padding:2px 6px;border-radius:4px;color:var(--o)">ClientReady</code> :<br>
+            <pre style="background:var(--bg);padding:12px;border-radius:8px;margin:10px 0;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--o);overflow-x:auto">const srv = require('./server');
+srv.setClient(client);
+srv.setDb(db);</pre>
+            <b style="color:var(--t)">3.</b> Ajoute dans <code style="background:var(--bg);padding:2px 6px;border-radius:4px;color:var(--o)">.env</code> (optionnel, moonthebest par défaut) :<br>
+            <pre style="background:var(--bg);padding:12px;border-radius:8px;margin:10px 0;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--o)">DASHBOARD_SECRET=moonthebest</pre>
+            <b style="color:var(--t)">4.</b> Redémarre le bot sur Render.<br>
+            <b style="color:var(--t)">5.</b> Entre l'URL ici et clique Tester.
+          </div>
+        </div>
+      </section>
+
     </main>
   </div>
 </div>
@@ -433,37 +464,81 @@ let currentGuildId = null;
 document.getElementById('lcode').addEventListener('keydown', e => { if(e.key==='Enter') tryLogin(); });
 document.getElementById('lurl').addEventListener('keydown',  e => { if(e.key==='Enter') document.getElementById('lcode').focus(); });
 
+const LOCAL_CODE = 'moonthebest';
+
 async function tryLogin() {
   const url  = document.getElementById('lurl').value.trim().replace(/\/$/, '');
   const code = document.getElementById('lcode').value.trim();
-  if (!url || !code) { showErr('Remplis tous les champs.'); return; }
-  try {
-    const r = await fetch(`${url}/api/bot`, { headers: { 'x-dashboard-secret': code } });
-    if (!r.ok) { showErr('Code incorrect ou bot inaccessible.'); return; }
-    const data = await r.json();
-    BOT_URL = url; SECRET = code;
-    document.getElementById('login').style.transition = 'opacity .4s';
-    document.getElementById('login').style.opacity   = '0';
-    setTimeout(() => {
-      document.getElementById('login').style.display = 'none';
-      document.getElementById('app').classList.add('v');
-      boot(data);
-    }, 400);
-  } catch(e) { showErr(`Impossible de joindre le bot : ${e.message}`); }
+  if (!code) { showErr('Entre le code d\'accès.'); return; }
+  if (code !== LOCAL_CODE) { showErr('Code incorrect.'); return; }
+
+  // Code OK — on entre dans le dashboard immédiatement
+  SECRET  = code;
+  BOT_URL = url;
+
+  document.getElementById('login').style.transition = 'opacity .4s';
+  document.getElementById('login').style.opacity    = '0';
+  setTimeout(async () => {
+    document.getElementById('login').style.display = 'none';
+    document.getElementById('app').classList.add('v');
+    // Tentative de connexion bot en arrière-plan
+    if (url) {
+      try {
+        const r = await fetch(`${url}/api/bot`, { headers: { 'x-dashboard-secret': code } });
+        if (r.ok) {
+          const data = await r.json();
+          boot(data);
+        } else {
+          showBotWarn('Bot inaccessible — vérifie l\'URL et que server.js est bien le nouveau.');
+          boot(null);
+        }
+      } catch(e) {
+        showBotWarn(`Impossible de joindre le bot : ${e.message}`);
+        boot(null);
+      }
+    } else {
+      showBotWarn('Aucune URL saisie — dashboard en mode hors-ligne. Entre l\'URL dans Paramètres.');
+      boot(null);
+    }
+  }, 400);
 }
+
 function showErr(msg) {
   const el = document.getElementById('lerr');
   el.textContent = msg; el.style.display = 'block';
   setTimeout(() => el.style.display = 'none', 3500);
 }
 
+function showBotWarn(msg) {
+  const w = document.getElementById('bot-warn');
+  if (!w) return;
+  w.textContent = '⚠️ ' + msg;
+  w.style.display = 'block';
+  setTimeout(() => w.style.display = 'none', 8000);
+}
+
 // ── BOOT ──────────────────────────────────────────────────────────
 async function boot(botData) {
-  updateHeader(botData);
-  await fetchGuilds();
-  populateAllSelects();
-  loadOverview(botData);
-  setInterval(refreshStatus, 8000);
+  if (botData) {
+    updateHeader(botData);
+    await fetchGuilds();
+    populateAllSelects();
+    loadOverview(botData);
+    setInterval(refreshStatus, 8000);
+  } else {
+    // Mode hors-ligne — affiche un message dans overview
+    document.getElementById('ov-stats').style.display = 'none';
+    document.getElementById('ov-content').style.display = 'block';
+    document.getElementById('ov-grid').innerHTML = '';
+    document.getElementById('ov-db').innerHTML = '<div style="color:var(--td);font-size:13px">Bot non connecté.</div>';
+    document.getElementById('ov-bot-info').innerHTML = `
+      <div style="color:var(--tm);font-size:13px;line-height:1.8">
+        Dashboard ouvert. Le bot n'est pas encore connecté.<br>
+        → Va dans <b style="color:var(--o)">Connexion bot</b> dans le menu pour configurer l'URL.
+      </div>`;
+    // Pré-remplir l'URL si déjà saisie
+    if (BOT_URL) document.getElementById('cfg-url').value = BOT_URL;
+  }
 }
 
 function updateHeader(d) {
@@ -818,6 +893,28 @@ async function loadTickets() {
       : '<div style="color:var(--td);font-size:12px;padding:8px 0">Aucun ticket ouvert.</div>';
     document.getElementById('tk-content').style.display = 'block';
   } catch(e) { toast(`❌ ${e.message}`); }
+}
+
+async function saveUrl() {
+  const url = document.getElementById('cfg-url').value.trim().replace(/\/$/,'');
+  const st  = document.getElementById('cfg-status');
+  if (!url) { st.textContent = '❌ Entre une URL.'; st.style.color='#FF8888'; return; }
+  st.innerHTML = '<span style="color:var(--o)">⏳ Test en cours...</span>';
+  try {
+    const r = await fetch(`${url}/api/bot`, { headers: { 'x-dashboard-secret': SECRET } });
+    if (!r.ok) throw new Error('Réponse ' + r.status);
+    const data = await r.json();
+    BOT_URL = url;
+    st.innerHTML = `<span style="color:var(--g)">✅ Connecté — ${data.username} · ${Math.round(data.ping)}ms</span>`;
+    document.getElementById('bot-warn').style.display = 'none';
+    updateHeader(data);
+    await fetchGuilds();
+    populateAllSelects();
+    loadOverview(data);
+    toast('✅ Bot connecté en live !');
+  } catch(e) {
+    st.innerHTML = `<span style="color:#FF8888">❌ Erreur : ${e.message}</span>`;
+  }
 }
 
 // ── NAVIGATION ───────────────────────────────────────────────────

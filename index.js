@@ -660,6 +660,7 @@ async function routeSelect(interaction) {
 client.once(Events.ClientReady, async () => {
   console.log(`Connecté en tant que ${client.user.tag} (instance ${INSTANCE_ID})`);
   dashboard.setClient(client);
+  dashboard.setDb(db);
   dashboard.pushLog('sys', `Bot connecté en tant que <b>${client.user.tag}</b> — ${client.guilds.cache.size} serveur(s)`);
   await dbReadyPromise;
   console.log(`Serveurs actuels (${client.guilds.cache.size}) :`, [...client.guilds.cache.values()].map((g) => `${g.name} (${g.id})`).join(' | '));
