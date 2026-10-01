@@ -81,35 +81,6 @@ const idOpt = (o) => o.setName('id').setDescription('ID du brainrot (voir /brain
 
 const commands = [
   new SlashCommandBuilder().setName('brainrotfinder').setDescription('(Staff) Gérer le catalogue de brainrots')
-    .addSubcommand(s => s.setName('add').setDescription('Ajouter un brainrot au catalogue')
-      .addStringOption(o => o.setName('nom').setDescription('Nom du brainrot').setRequired(true).setMaxLength(80))
-      .addStringOption(tierOpt)
-      .addStringOption(o => o.setName('invite').setDescription('Lien d\'invitation Discord du serveur').setRequired(true).setMaxLength(200))
-      .addStringOption(o => o.setName('image').setDescription('URL de l\'image ou du GIF').setRequired(true).setMaxLength(500))
-      .addStringOption(o => o.setName('description').setDescription('Description courte (optionnel)').setMaxLength(300)))
-    .addSubcommand(s => s.setName('remove').setDescription('Supprimer un brainrot').addStringOption(idOpt))
-    .addSubcommand(s => s.setName('edit').setDescription('Modifier un brainrot')
-      .addStringOption(idOpt)
-      .addStringOption(o => o.setName('nom').setDescription('Nouveau nom').setMaxLength(80))
-      .addStringOption(tierOpt.bind(null, { setName: () => {}, setDescription: () => {}, setRequired: () => {}, addChoices: () => {} }))
-      .addStringOption(o => o.setName('invite').setDescription('Nouveau lien d\'invitation').setMaxLength(200))
-      .addStringOption(o => o.setName('image').setDescription('Nouvelle URL image/GIF').setMaxLength(500))
-      .addStringOption(o => o.setName('description').setDescription('Nouvelle description (- = effacer)').setMaxLength(300)))
-    .addSubcommand(s => s.setName('list').setDescription('Voir tous les brainrots du catalogue')),
-
-  new SlashCommandBuilder().setName('brainrotfind').setDescription('Parcourir le Brainrot Finder')
-    .addStringOption(o => o.setName('tier').setDescription('Filtrer par tier').addChoices(
-      { name: '🟢 LOW', value: 'LOW' }, { name: '🟡 MID', value: 'MID' }, { name: '🔴 HIGH', value: 'HIGH' }, { name: '⭐ Tous', value: 'ALL' }
-    )),
-
-  new SlashCommandBuilder().setName('brainrotconfig').setDescription('(Staff) Configurer le Brainrot Finder')
-    .addSubcommand(s => s.setName('premium').setDescription('Définir le rôle premium requis pour Join (vide = tout le monde)')
-      .addRoleOption(o => o.setName('role').setDescription('Rôle premium')))
-    .addSubcommand(s => s.setName('voir').setDescription('Voir la configuration actuelle')),
-].map(c => c.setDMPermission(false).toJSON());
-
-// Fix /brainrotfinder edit tier option (rebuild cleanly)
-commands[0] = new SlashCommandBuilder().setName('brainrotfinder').setDescription('(Staff) Gérer le catalogue de brainrots')
   .addSubcommand(s => s.setName('add').setDescription('Ajouter un brainrot au catalogue')
     .addStringOption(o => o.setName('nom').setDescription('Nom du brainrot').setRequired(true).setMaxLength(80))
     .addStringOption(o => o.setName('tier').setDescription('Tier du brainrot').setRequired(true)
@@ -128,7 +99,19 @@ commands[0] = new SlashCommandBuilder().setName('brainrotfinder').setDescription
     .addStringOption(o => o.setName('image').setDescription('Nouvelle URL image/GIF').setMaxLength(500))
     .addStringOption(o => o.setName('description').setDescription('Nouvelle description (- = effacer)').setMaxLength(300)))
   .addSubcommand(s => s.setName('list').setDescription('Voir tous les brainrots du catalogue'))
-  .setDMPermission(false).toJSON();
+  .setDMPermission(false),
+
+  new SlashCommandBuilder().setName('brainrotfind').setDescription('Parcourir le Brainrot Finder')
+    .addStringOption(o => o.setName('tier').setDescription('Filtrer par tier').addChoices(
+      { name: '🟢 LOW', value: 'LOW' }, { name: '🟡 MID', value: 'MID' }, { name: '🔴 HIGH', value: 'HIGH' }, { name: '⭐ Tous', value: 'ALL' }
+    )).setDMPermission(false),
+
+  new SlashCommandBuilder().setName('brainrotconfig').setDescription('(Staff) Configurer le Brainrot Finder')
+    .addSubcommand(s => s.setName('premium').setDescription('Définir le rôle premium requis pour Join (vide = tout le monde)')
+      .addRoleOption(o => o.setName('role').setDescription('Rôle premium')))
+    .addSubcommand(s => s.setName('voir').setDescription('Voir la configuration actuelle'))
+    .setDMPermission(false),
+].map(c => c.toJSON());
 
 const COMMAND_NAMES = new Set(['brainrotfinder', 'brainrotfind', 'brainrotconfig']);
 const isBFCommand = name => COMMAND_NAMES.has(name);
