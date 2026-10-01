@@ -77,6 +77,7 @@ async function executeModAction({ guild, actorMember, action, user_id, reason, d
       const c = db.addCase(g, { type: 'kick', userId: user_id, moderatorId: actorMember.id, reason: finalReason });
       await db.save(guild.id);
       await mod.postToModLog(client, g, mod.caseEmbed(c, guild.name));
+      dashboard.pushLog('mod', `<b>${targetMember.user.tag}</b> expulsé(e) — ${finalReason}`);
       return { success: true, message: `${targetMember.user.tag} expulsé(e). Cas #${c.id}.` };
     }
     if (action === 'ban') {
@@ -84,6 +85,7 @@ async function executeModAction({ guild, actorMember, action, user_id, reason, d
       const c = db.addCase(g, { type: 'ban', userId: user_id, moderatorId: actorMember.id, reason: finalReason });
       await db.save(guild.id);
       await mod.postToModLog(client, g, mod.caseEmbed(c, guild.name));
+      dashboard.pushLog('mod', `Utilisateur <b>${user_id}</b> banni — ${finalReason}`);
       return { success: true, message: `Utilisateur (${user_id}) banni. Cas #${c.id}.` };
     }
     if (action === 'timeout') {
@@ -94,6 +96,7 @@ async function executeModAction({ guild, actorMember, action, user_id, reason, d
       const c = db.addCase(g, { type: 'timeout', userId: user_id, moderatorId: actorMember.id, reason: finalReason, extra: { ms } });
       await db.save(guild.id);
       await mod.postToModLog(client, g, mod.caseEmbed(c, guild.name));
+      dashboard.pushLog('mod', `<b>${targetMember.user.tag}</b> en sourdine ${mod.fmtDuration(ms)} — ${finalReason}`);
       return { success: true, message: `${targetMember.user.tag} en sourdine pour ${mod.fmtDuration(ms)}. Cas #${c.id}.` };
     }
     if (action === 'warn') {
@@ -102,6 +105,7 @@ async function executeModAction({ guild, actorMember, action, user_id, reason, d
       const warnCount = g.cases.filter((x) => x.type === 'warn' && x.userId === user_id).length;
       await db.save(guild.id);
       await mod.postToModLog(client, g, mod.caseEmbed(c, guild.name));
+      dashboard.pushLog('mod', `<b>${targetMember.user.tag}</b> averti(e) (${warnCount}/3+) — ${finalReason}`);
       return { success: true, message: `${targetMember.user.tag} averti(e) (${warnCount} avertissement(s) au total). Cas #${c.id}.` };
     }
     return { error: `Action inconnue : ${action}` };
@@ -654,6 +658,8 @@ async function routeSelect(interaction) {
 // ----------------------------------------------------------------
 client.once(Events.ClientReady, async () => {
   console.log(`Connecté en tant que ${client.user.tag} (instance ${INSTANCE_ID})`);
+  dashboard.setClient(client);
+  dashboard.pushLog('sys', `Bot connecté en tant que <b>${client.user.tag}</b> — ${client.guilds.cache.size} serveur(s)`);
   await dbReadyPromise;
   console.log(`Serveurs actuels (${client.guilds.cache.size}) :`, [...client.guilds.cache.values()].map((g) => `${g.name} (${g.id})`).join(' | '));
   await registerCommands();
@@ -1270,6 +1276,8 @@ client.on(Events.MessageCreate, async (message) => {
     const canModerate = perms.hasStaff(message.member, g);
     const res = await ai.askClaude({ channelId: message.channelId, userId: message.author.id, userName: message.author.username, userText: text, persona: g.aiPersona, serverContext: needsServerContext(text) ? buildServerContext(message.guild) : null, speakerInfo: buildSpeakerInfo(message.member), guild: message.guild, canModerate, modExecutor: canModerate ? (args) => executeModAction({ guild: message.guild, actorMember: message.member, ...args }) : null });
     const out = res.error ? `❌ ${res.error}` : res.text;
+    dashboard.recordAiExchange({ blocked: !!res.error });
+    dashboard.pushLog('ai', `Réponse à <b>${message.author.username}</b> dans <b>#${message.channel.name}</b>`);
     await message.reply({ content: out, allowedMentions: { repliedUser: false } });
   } catch (e) { console.error('Erreur MessageCreate :', e); }
 });
@@ -1288,7 +1296,7 @@ client.on(Events.GuildMemberAdd, async (member) => {
 // Le serveur web démarre EN PREMIER, avant toute connexion MongoDB : Render
 // surveille son port pour savoir si l'app est vivante, et le tuerait pendant
 // des tentatives MongoDB lentes/échouées sinon (redémarrages en boucle).
-require('./server');
+const dashboard = require('./server');
 (async () => {
   await ensureDeobfExtracted();
   await ensureLuauBinary();
