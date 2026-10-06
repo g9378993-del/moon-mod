@@ -15,6 +15,7 @@ function defaultGuild() {
   return {
     staffRoles: [],           // rôles (en plus d'Administrateur/Gérer le serveur) autorisés à modérer
     modLogChannelId: null,    // salon où sont postés kick/ban/warn/etc.
+    constructionMode: false,  // mode construction du serveur (gestion des salons)
     nextCaseId: 1,
     cases: [],                // { id, type, userId, moderatorId, reason, createdAt, extra }
     automod: {
