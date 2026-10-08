@@ -1,0 +1,7 @@
+# render.yaml — Moon Bot
+services:
+  - type: background_worker
+    name: moon-bot
+    runtime: node
+    buildCommand: "npm ci --prefer-offline --no-audit"
+    startCommand: node index.js
