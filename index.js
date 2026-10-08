@@ -37,7 +37,7 @@ function needsServerContext(text) {
   return ['salon', 'channel', 'role', 'staff', 'canal'].some(k => text.toLowerCase().includes(k));
 }
 
-const commands = [new SlashCommandBuilder().setName('ask').setDescription('Ask AI').addStringOption(o => o.setName('question').setDescription('Question').setRequired(true)).toJSON(), new SlashCommandBuilder().setName('deobf').setDescription('Deobfuscate script').addAttachmentOption(o => o.setName('fichier').setDescription('File').setRequired(true)).toJSON(), new SlashCommandBuilder().setName('help').setDescription('Show commands').toJSON()].map(c => c.setDMPermission(false));
+const commands = [new SlashCommandBuilder().setName('ask').setDescription('Ask AI').addStringOption(o => o.setName('question').setDescription('Question').setRequired(true)).setDMPermission(false).toJSON(), new SlashCommandBuilder().setName('deobf').setDescription('Deobfuscate script').addAttachmentOption(o => o.setName('fichier').setDescription('File').setRequired(true)).setDMPermission(false).toJSON(), new SlashCommandBuilder().setName('help').setDescription('Show commands').setDMPermission(false).toJSON()];
 
 commands.push(...economy.commands, ...perms.commands, ...constructionCmds.commands, ...trade.commands, ...bf.commands);
 perms.setCommandNames(commands.map(c => c.name));
