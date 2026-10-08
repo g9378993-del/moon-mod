@@ -1,10 +1,10 @@
 const { SlashCommandBuilder, ChannelType, ButtonBuilder, ButtonStyle, ActionRowBuilder, StringSelectMenuBuilder } = require('discord.js');
 
 const commands = [
-  new SlashCommandBuilder().setName('buildmode').setDescription('Toggle construction mode').toJSON(),
-  new SlashCommandBuilder().setName('createchannel').setDescription('Create channel').addStringOption(o => o.setName('nom').setDescription('Channel name').setRequired(true)).toJSON(),
-  new SlashCommandBuilder().setName('deletechannel').setDescription('Delete channels').toJSON(),
-  new SlashCommandBuilder().setName('copychannels').setDescription('Copy channels from another server').addStringOption(o => o.setName('server_id').setDescription('Server ID').setRequired(true)).toJSON(),
+  new SlashCommandBuilder().setName('buildmode').setDescription('Toggle construction mode').setDMPermission(false).toJSON(),
+  new SlashCommandBuilder().setName('createchannel').setDescription('Create channel').addStringOption(o => o.setName('nom').setDescription('Channel name').setRequired(true)).setDMPermission(false).toJSON(),
+  new SlashCommandBuilder().setName('deletechannel').setDescription('Delete channels').setDMPermission(false).toJSON(),
+  new SlashCommandBuilder().setName('copychannels').setDescription('Copy channels from another server').addStringOption(o => o.setName('server_id').setDescription('Server ID').setRequired(true)).setDMPermission(false).toJSON(),
 ];
 
 function isConstructionCommand(name) {
