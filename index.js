@@ -20,7 +20,7 @@ process.on('uncaughtException', (err) => console.error('Uncaught exception:', er
 
 const INSTANCE_ID = `moon-${Date.now()}`;
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.DirectMessages], partials: [Partials.Channel, Partials.Message] });
-let dbReadyPromise = new Promise(r => db.onceReady(() => r()));
+let dbReadyPromise = db.initDb();
 
 function buildServerContext(guild) {
   const channels = guild.channels.cache.filter(c => c.type === ChannelType.GuildText || c.type === ChannelType.GuildAnnouncement).sort((a, b) => a.rawPosition - b.rawPosition).map(c => `#${c.name} (<#${c.id}>)`);
