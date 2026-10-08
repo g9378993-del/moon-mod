@@ -1,0 +1,6 @@
+# render.yaml — Moon Bot
+services:
+  - type: background_worker
+    name: moon-bot
+    runtime: node
+    startCommand: node index.js
