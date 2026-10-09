@@ -94,7 +94,7 @@ async function handleModCommand(interaction, guild, g) {
 
 async function handleCommand(interaction) {
   const guild = interaction.guild;
-  const g = await db.getGuild(guild.id);
+  const g = await db.get(guild.id);
 
   if (interaction.isButton() || interaction.isStringSelectMenu() || interaction.isModalSubmit()) {
     await routeSelect(interaction, guild, g);
@@ -162,7 +162,7 @@ client.on(Events.MessageCreate, async (message) => {
     await dbReadyPromise;
     const guild = message.guild;
     if (!guild) return;
-    const g = await db.getGuild(guild.id);
+    const g = await db.get(guild.id);
     if (automod.shouldFilter(message, g)) { await message.delete().catch(() => {}); }
   } catch (error) {
     console.error('Message error:', error);
@@ -171,7 +171,7 @@ client.on(Events.MessageCreate, async (message) => {
 
 client.on(Events.GuildCreate, async (guild) => {
   console.log(`Joined: ${guild.name}`);
-  await db.getGuild(guild.id);
+  await db.get(guild.id);
 });
 
 client.once(Events.ClientReady, async () => {
