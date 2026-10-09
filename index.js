@@ -163,7 +163,7 @@ client.on(Events.MessageCreate, async (message) => {
     const guild = message.guild;
     if (!guild) return;
     const g = await db.get(guild.id);
-    if (automod.shouldFilter(message, g)) { await message.delete().catch(() => {}); }
+    await automod.checkMessage(message, client, g, db);
   } catch (error) {
     console.error('Message error:', error);
   }
