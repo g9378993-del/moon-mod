@@ -85,7 +85,7 @@ const commands = [
       .addRoleOption(o => o.setName('role').setDescription('Role premium')))
     .addSubcommand(s => s.setName('voir').setDescription('Voir la configuration actuelle'))
     .setDMPermission(false),
-].map(c => c.toJSON());
+].map(c => c.setDMPermission(false).toJSON());
 
 const COMMAND_NAMES = new Set(['brainrotfinder', 'brainrotfind', 'brainrotconfig']);
 const isBFCommand = name => COMMAND_NAMES.has(name);
