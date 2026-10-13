@@ -146,7 +146,6 @@ async function handleCommand(interaction) {
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
-    await dbReadyPromise;
     if (interaction.isAutocomplete()) { if (perms.isPermCommand(interaction.commandName)) await perms.autocomplete(interaction); else if (trade.isTradeCommand(interaction.commandName)) await trade.autocomplete(interaction); else if (bf.isBFCommand(interaction.commandName)) await bf.autocomplete(interaction); else await economy.autocomplete(interaction); return; }
     if (interaction.customId && interaction.customId.startsWith('eco:')) { await economy.handleComponent(interaction); return; }
     if (interaction.customId && interaction.customId.startsWith('trade:')) { await trade.handleComponent(interaction); return; }
