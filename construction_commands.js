@@ -16,7 +16,7 @@ async function handleCommand(interaction, client, g, db) {
   try {
     if (cmd === 'buildmode') {
       g.constructionMode = !g.constructionMode;
-      await db.updateGuild(interaction.guildId, { constructionMode: g.constructionMode });
+      await db.save(interaction.guildId);
       await interaction.editReply({ content: `Mode: ${g.constructionMode ? 'ON' : 'OFF'}` });
       return;
     }
@@ -57,11 +57,12 @@ async function handleCommand(interaction, client, g, db) {
 async function handleSelectMenu(interaction, client, g, db) {
   const sel = interaction.values;
   if (!sel || sel.length === 0) { await interaction.update({ content: '[INFO] None selected', components: [] }); return; }
+  const names = sel.map(id => interaction.guild.channels.cache.get(id)?.name || '?').join(', ');
+  const ids = sel.join(',');
   const btn = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`delete_confirm_${sel[0]}`).setLabel('Confirm').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(`delete_confirm_${ids}`).setLabel('Confirm').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId('delete_cancel_multi').setLabel('Cancel').setStyle(ButtonStyle.Secondary)
   );
-  const names = sel.map(id => interaction.guild.channels.cache.get(id)?.name || '?').join(', ');
   await interaction.update({ content: `[CONFIRM] Delete: ${names}?`, components: [btn] });
 }
 

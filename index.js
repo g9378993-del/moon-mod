@@ -73,10 +73,13 @@ async function executeModAction({ guild, actorMember, action, user_id, reason, d
 
 async function routeSelect(interaction, guild, g) {
   if (interaction.customId.startsWith('delete_confirm_')) {
-    const chId = interaction.customId.split('_')[2];
-    const ch = guild.channels.cache.get(chId);
-    if (ch && ch.deletable) { await ch.delete('Deleted by ' + interaction.user.tag).catch(() => {}); await interaction.update({ content: '[OK] Deleted', embeds: [], components: [] }); }
-    else { await interaction.update({ content: '[ERROR] Cannot delete', embeds: [], components: [] }); }
+    const ids = interaction.customId.slice('delete_confirm_'.length).split(',');
+    let deleted = 0;
+    for (const chId of ids) {
+      const ch = guild.channels.cache.get(chId);
+      if (ch && ch.deletable) { await ch.delete('Deleted by ' + interaction.user.tag).catch(() => {}); deleted++; }
+    }
+    await interaction.update({ content: `[OK] ${deleted} channel(s) deleted.`, embeds: [], components: [] });
     return;
   }
   if (interaction.customId.startsWith('delete_cancel_')) { await interaction.update({ content: '[CANCEL]', embeds: [], components: [] }); return; }
