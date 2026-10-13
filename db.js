@@ -167,11 +167,15 @@ async function mongoWrite(id, data) {
 }
 async function save(guildId) {
   writeLocalStore();
-  if (mongoReady && collection && state.guilds[guildId]) await mongoWrite(`guild:${guildId}`, state.guilds[guildId]);
+  if (mongoReady && collection && state.guilds[guildId]) {
+    mongoWrite(`guild:${guildId}`, state.guilds[guildId]).catch((err) => console.error('Erreur save MongoDB (guild) :', err.message));
+  }
 }
 async function saveUser(userId) {
   writeLocalStore();
-  if (mongoReady && collection && state.users[userId]) await mongoWrite(`user:${userId}`, state.users[userId]);
+  if (mongoReady && collection && state.users[userId]) {
+    mongoWrite(`user:${userId}`, state.users[userId]).catch((err) => console.error('Erreur save MongoDB (user) :', err.message));
+  }
 }
 
 // Ajoute un cas de modération (kick/ban/warn/timeout/automod...) et renvoie
