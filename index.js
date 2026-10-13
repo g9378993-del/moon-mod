@@ -18,6 +18,9 @@ const { Client, GatewayIntentBits, Partials, Events, PermissionFlagsBits, Channe
 process.on('unhandledRejection', (err) => console.error('Unhandled rejection:', err));
 process.on('uncaughtException', (err) => console.error('Uncaught exception:', err));
 
+const http = require('http');
+http.createServer((req, res) => res.end('OK')).listen(process.env.PORT || 3000);
+
 const INSTANCE_ID = `moon-${Date.now()}`;
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.DirectMessages], partials: [Partials.Channel, Partials.Message] });
 let dbReadyPromise = db.initDb();
