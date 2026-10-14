@@ -13,7 +13,7 @@ const perms = require('./perms');
 const constructionCmds = require('./construction_commands');
 const trade = require('./trade');
 const bf = require('./brainrot-finder');
-const { Client, GatewayIntentBits, Partials, Events, PermissionFlagsBits, ChannelType, EmbedBuilder, REST, Routes, SlashCommandBuilder, AttachmentBuilder, ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, Events, PermissionFlagsBits, ChannelType, EmbedBuilder, REST, Routes, SlashCommandBuilder, AttachmentBuilder, ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle, MessageFlags } = require('discord.js');
 
 process.on('unhandledRejection', (err) => console.error('Unhandled rejection:', err));
 process.on('uncaughtException', (err) => console.error('Uncaught exception:', err));
@@ -110,7 +110,7 @@ async function handleCommand(interaction) {
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === 'deobf') {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     await interaction.editReply('[INFO] Deobfuscation not implemented');
     return;
   }
@@ -121,10 +121,10 @@ async function handleCommand(interaction) {
 
   if (constructionCmds.isConstructionCommand(interaction.commandName)) {
     if (!perms.canUseCommand(interaction.member, g, interaction.commandName)) {
-      await interaction.reply({ content: 'No permission', ephemeral: true });
+      await interaction.reply({ content: 'No permission', flags: MessageFlags.Ephemeral });
       return;
     }
-    await interaction.deferReply({ ephemeral: ['buildmode', 'copychannels'].includes(interaction.commandName) });
+    await interaction.deferReply({ flags: ['buildmode', 'copychannels'].includes(interaction.commandName) ? MessageFlags.Ephemeral : undefined });
     await constructionCmds.handleCommand(interaction, client, g, db);
     return;
   }
@@ -139,11 +139,11 @@ async function handleCommand(interaction) {
 
   const nonStaffAllowed = new Set(['warnings', 'help']);
   if (!nonStaffAllowed.has(interaction.commandName) && !perms.canUseCommand(interaction.member, g, interaction.commandName)) {
-    await interaction.reply({ content: 'No permission', ephemeral: true });
+    await interaction.reply({ content: 'No permission', flags: MessageFlags.Ephemeral });
     return;
   }
 
-  await interaction.deferReply({ ephemeral: ['warnings', 'modlogs', 'case', 'staffrole', 'warnactions', 'automod', 'help', 'setmodlog', 'vider', 'scanalts'].includes(interaction.commandName) });
+  await interaction.deferReply({ flags: ['warnings', 'modlogs', 'case', 'staffrole', 'warnactions', 'automod', 'help', 'setmodlog', 'vider', 'scanalts'].includes(interaction.commandName) ? MessageFlags.Ephemeral : undefined });
   await handleModCommand(interaction, guild, g);
 }
 
@@ -156,8 +156,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
     await handleCommand(interaction);
   } catch (error) {
     console.error('Interaction error:', error);
-    if (interaction.deferred || interaction.replied) { await interaction.editReply({ content: `[ERROR] ${error.message}`, ephemeral: true }).catch(() => {}); }
-    else { await interaction.reply({ content: `[ERROR] ${error.message}`, ephemeral: true }).catch(() => {}); }
+    if (interaction.deferred || interaction.replied) { await interaction.editReply({ content: `[ERROR] ${error.message}` }).catch(() => {}); }
+    else { await interaction.reply({ content: `[ERROR] ${error.message}`, flags: MessageFlags.Ephemeral }).catch(() => {}); }
   }
 });
 

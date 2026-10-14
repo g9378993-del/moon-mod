@@ -11,7 +11,7 @@
 const {
   EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder,
   UserSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle,
-  SlashCommandBuilder, ChannelType,
+  SlashCommandBuilder, ChannelType, MessageFlags,
 } = require('discord.js');
 const db = require('./db');
 const perms = require('./perms');
@@ -247,7 +247,7 @@ async function handleComponent(interaction) {
   const e = eco(g); const c = e.config;
   const id = interaction.customId;
   const staff = perms.canUseCommand(interaction.member, g, 'ecoadmin'); // boutons Add/Remove Coins
-  const eph = (payload) => interaction.reply({ ephemeral: true, allowedMentions: { parse: [] }, ...(typeof payload === 'string' ? { content: payload } : payload) });
+  const eph = (payload) => interaction.reply({ flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] }, ...(typeof payload === 'string' ? { content: payload } : payload) });
 
   // ---------- Boutons du panel ----------
   if (interaction.isButton()) {
@@ -473,8 +473,8 @@ async function handleCommand(interaction) {
   const sub = interaction.options.getSubcommand(false);
   const staff = perms.canUseCommand(interaction.member, g, name);
   const isPublic = name === 'coins' || (name === 'shop' && sub === 'list');
-  if (!isPublic && !staff) { await interaction.reply({ content: NO_PERM, ephemeral: true }); return; }
-  await interaction.deferReply({ ephemeral: true });
+  if (!isPublic && !staff) { await interaction.reply({ content: NO_PERM, flags: MessageFlags.Ephemeral }); return; }
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const reply = (content, extra = {}) => interaction.editReply({ content, allowedMentions: { parse: [] }, ...extra });
 
   // ---------- /panelcoins ----------
