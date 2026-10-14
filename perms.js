@@ -9,7 +9,7 @@
 //  g.permRoles[roleId]   : { all, cmds: [] }   → rôles avec accès à certaines commandes
 //  g.permUsers[userId]   : { all, cmds: [] }   → membres avec accès à certaines commandes
 // ================================================================
-const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
+const { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } = require('discord.js');
 const db = require('./db');
 const mod = require('./moderation');
 
@@ -116,10 +116,10 @@ async function handleCommand(interaction) {
   const g = db.get(guild.id);
   ensure(g);
   if (!hasBase(interaction.member, g)) {
-    await interaction.reply({ content: '❌ Seuls les Administrateurs / Gérer le serveur / rôles staff (accès complet) peuvent gérer les permissions.', ephemeral: true });
+    await interaction.reply({ content: '❌ Seuls les Administrateurs / Gérer le serveur / rôles staff (accès complet) peuvent gérer les permissions.', flags: MessageFlags.Ephemeral });
     return;
   }
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const reply = (content) => interaction.editReply({ content, allowedMentions: { parse: [] } });
   const name = interaction.commandName;
   const sub = interaction.options.getSubcommand();
