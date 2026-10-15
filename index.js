@@ -1,3 +1,4 @@
+console.log('[BOOT] index.js chargé');
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
@@ -33,6 +34,17 @@ if (process.env.PUBLIC_URL) {
 const INSTANCE_ID = `moon-${Date.now()}`;
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.DirectMessages], partials: [Partials.Channel, Partials.Message] });
 let dbReadyPromise = db.initDb();
+
+// Lecture de la config avec timeout : évite que toutes les commandes restent sans réponse si la DB traîne
+async function getGuildConfig(guildId) {
+  return Promise.race([
+    db.get(guildId),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('DB timeout')), 1500)),
+  ]).catch(err => {
+    console.error('getGuildConfig:', err.message);
+    return {};
+  });
+}
 
 function buildServerContext(guild) {
   const channels = guild.channels.cache.filter(c => c.type === ChannelType.GuildText || c.type === ChannelType.GuildAnnouncement).sort((a, b) => a.rawPosition - b.rawPosition).map(c => `#${c.name} (<#${c.id}>)`);
@@ -96,6 +108,10 @@ async function routeSelect(interaction, guild, g) {
     await constructionCmds.handleSelectMenu(interaction, client, g, db);
     return;
   }
+  // Fallback : un bouton non géré doit quand même recevoir une réponse, sinon Discord affiche "n'a pas répondu à temps"
+  if (interaction.isButton() && !interaction.deferred && !interaction.replied) {
+    await interaction.deferUpdate().catch(() => {});
+  }
 }
 
 async function handleModCommand(interaction, guild, g) {
@@ -109,7 +125,8 @@ async function handleModCommand(interaction, guild, g) {
 
 async function handleCommand(interaction) {
   const guild = interaction.guild;
-  const g = await db.get(guild.id);
+  if (!guild) return;
+  const g = await getGuildConfig(guild.id);
 
   if (interaction.isButton() || interaction.isStringSelectMenu() || interaction.isModalSubmit()) {
     await routeSelect(interaction, guild, g);
@@ -157,6 +174,8 @@ async function handleCommand(interaction) {
 }
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  // DEBUG : à retirer une fois le problème réglé
+  console.log('[INTERACTION]', interaction.type, interaction.commandName || interaction.customId || '');
   try {
     if (interaction.isAutocomplete()) { if (perms.isPermCommand(interaction.commandName)) await perms.autocomplete(interaction); else if (trade.isTradeCommand(interaction.commandName)) await trade.autocomplete(interaction); else if (bf.isBFCommand(interaction.commandName)) await bf.autocomplete(interaction); else await economy.autocomplete(interaction); return; }
     if (interaction.customId && interaction.customId.startsWith('eco:')) { await economy.handleComponent(interaction); return; }
@@ -176,7 +195,7 @@ client.on(Events.MessageCreate, async (message) => {
     await dbReadyPromise;
     const guild = message.guild;
     if (!guild) return;
-    const g = await db.get(guild.id);
+    const g = await getGuildConfig(guild.id);
     await automod.checkMessage(message, client, g, db);
   } catch (error) {
     console.error('Message error:', error);
@@ -185,15 +204,19 @@ client.on(Events.MessageCreate, async (message) => {
 
 client.on(Events.GuildCreate, async (guild) => {
   console.log(`Joined: ${guild.name}`);
-  await db.get(guild.id);
+  await getGuildConfig(guild.id);
 });
 
 client.once(Events.ClientReady, async () => {
   console.log(`Connected as ${client.user.tag}`);
-  await dbReadyPromise;
-  console.log(`${client.guilds.cache.size} server(s)`);
+  // Les commandes ne dépendent pas de la DB : on les enregistre d'abord
   await registerCommands();
+  await dbReadyPromise.catch(e => console.error('DB init failed:', e));
+  console.log(`${client.guilds.cache.size} server(s)`);
   economy.startVoiceTracking(client);
 });
 
-client.login(process.env.DISCORD_TOKEN);
+console.log('[BOOT] login en cours...');
+client.login(process.env.DISCORD_TOKEN)
+  .then(() => console.log('[BOOT] login OK'))
+  .catch(err => console.error('[BOOT] LOGIN FAILED:', err.message));
