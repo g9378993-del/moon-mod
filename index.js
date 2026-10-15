@@ -21,6 +21,15 @@ process.on('uncaughtException', (err) => console.error('Uncaught exception:', er
 const http = require('http');
 http.createServer((req, res) => res.end('OK')).listen(process.env.PORT || 3000);
 
+// Auto-ping pour empêcher Render de mettre le service en veille (free tier)
+if (process.env.PUBLIC_URL) {
+  setInterval(() => {
+    const url = new URL(process.env.PUBLIC_URL);
+    const mod = url.protocol === 'https:' ? require('https') : require('http');
+    mod.get(process.env.PUBLIC_URL, () => {}).on('error', () => {});
+  }, 10 * 60 * 1000); // toutes les 10 minutes
+}
+
 const INSTANCE_ID = `moon-${Date.now()}`;
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.DirectMessages], partials: [Partials.Channel, Partials.Message] });
 let dbReadyPromise = db.initDb();
