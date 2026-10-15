@@ -35,6 +35,18 @@ const INSTANCE_ID = `moon-${Date.now()}`;
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.DirectMessages], partials: [Partials.Channel, Partials.Message] });
 let dbReadyPromise = db.initDb();
 
+// ===== DIAGNOSTIC CONNEXION (à retirer une fois réglé) =====
+client.on('error', e => console.error('[CLIENT ERROR]', e));
+client.on('shardError', e => console.error('[SHARD ERROR]', e));
+client.on('shardDisconnect', (e, id) => console.error('[SHARD DISCONNECT]', id, e?.code, e?.reason));
+client.on('shardReady', id => console.log('[SHARD READY]', id));
+client.on('shardResume', id => console.log('[SHARD RESUME]', id));
+client.on('warn', m => console.warn('[WARN]', m));
+setTimeout(() => {
+  if (!client.isReady()) console.error('[BOOT] toujours pas prêt après 60s');
+}, 60000);
+// ===========================================================
+
 // Lecture de la config avec timeout : évite que toutes les commandes restent sans réponse si la DB traîne
 async function getGuildConfig(guildId) {
   return Promise.race([
