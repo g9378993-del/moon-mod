@@ -466,15 +466,22 @@ const COMMAND_NAMES = new Set(['panelcoins', 'coins', 'ecoadmin', 'ecoconfig', '
 const isEconomyCommand = (name) => COMMAND_NAMES.has(name);
 
 async function handleCommand(interaction) {
+  console.log('[ECO] handleCommand start:', interaction.commandName);
   const guild = interaction.guild;
   const g = db.get(guild.id);
+  console.log('[ECO] g loaded');
   const e = eco(g); const c = e.config;
+  console.log('[ECO] eco() done');
   const name = interaction.commandName;
   const sub = interaction.options.getSubcommand(false);
+  console.log('[ECO] sub:', sub);
   const staff = perms.canUseCommand(interaction.member, g, name);
+  console.log('[ECO] staff:', staff);
   const isPublic = name === 'coins' || (name === 'shop' && sub === 'list');
   if (!isPublic && !staff) { await interaction.reply({ content: NO_PERM, flags: MessageFlags.Ephemeral }); return; }
+  console.log('[ECO] about to deferReply');
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  console.log('[ECO] deferReply done');
   const reply = (content, extra = {}) => interaction.editReply({ content, allowedMentions: { parse: [] }, ...extra });
 
   // ---------- /panelcoins ----------
