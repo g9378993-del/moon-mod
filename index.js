@@ -28,14 +28,14 @@ if (process.env.PUBLIC_URL) {
     const url = new URL(process.env.PUBLIC_URL);
     const mod = url.protocol === 'https:' ? require('https') : require('http');
     mod.get(process.env.PUBLIC_URL, () => {}).on('error', () => {});
-  }, 10 * 60 * 1000); // toutes les 10 minutes
+  }, 10 * 60 * 1000);
 }
 
 const INSTANCE_ID = `moon-${Date.now()}`;
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.DirectMessages], partials: [Partials.Channel, Partials.Message] });
 let dbReadyPromise = db.initDb();
 
-// ===== DIAGNOSTIC CONNEXION (à retirer une fois réglé) =====
+// ===== DIAGNOSTIC CONNEXION =====
 client.on('error', e => console.error('[CLIENT ERROR]', e));
 client.on('shardError', e => console.error('[SHARD ERROR]', e));
 client.on('shardDisconnect', (e, id) => console.error('[SHARD DISCONNECT]', id, e?.code, e?.reason));
@@ -45,9 +45,8 @@ client.on('warn', m => console.warn('[WARN]', m));
 setTimeout(() => {
   if (!client.isReady()) console.error('[BOOT] toujours pas prêt après 60s');
 }, 60000);
-// ===========================================================
+// ================================
 
-// Lecture de la config avec timeout : évite que toutes les commandes restent sans réponse si la DB traîne
 async function getGuildConfig(guildId) {
   return Promise.race([
     db.get(guildId),
@@ -73,7 +72,25 @@ function needsServerContext(text) {
   return ['salon', 'channel', 'role', 'staff', 'canal'].some(k => text.toLowerCase().includes(k));
 }
 
-const commands = [new SlashCommandBuilder().setName('ask').setDescription('Ask AI').addStringOption(o => o.setName('question').setDescription('Question').setRequired(true)).setDMPermission(false).toJSON(), new SlashCommandBuilder().setName('deobf').setDescription('Deobfuscate script').addAttachmentOption(o => o.setName('fichier').setDescription('File').setRequired(true)).setDMPermission(false).toJSON(), new SlashCommandBuilder().setName('help').setDescription('Show commands').setDMPermission(false).toJSON()];
+const commands = [
+  new SlashCommandBuilder().setName('ask').setDescription('Ask AI').addStringOption(o => o.setName('question').setDescription('Question').setRequired(true)).setDMPermission(false).toJSON(),
+  new SlashCommandBuilder().setName('deobf').setDescription('Deobfuscate script').addAttachmentOption(o => o.setName('fichier').setDescription('File').setRequired(true)).setDMPermission(false).toJSON(),
+  new SlashCommandBuilder().setName('help').setDescription('Show commands').setDMPermission(false).toJSON(),
+  // ===== COMMANDE AI CHANNEL-ADD AJOUTÉE =====
+  new SlashCommandBuilder()
+    .setName('ai')
+    .setDescription('Gérer l\'IA dans les salons')
+    .addSubcommand(s => s.setName('channel-add').setDescription('Activer l\'IA dans un salon (répond à tous les messages)')
+      .addChannelOption(o => o.setName('salon').setDescription('Salon à activer').setRequired(true).addChannelTypes(ChannelType.GuildText)))
+    .addSubcommand(s => s.setName('channel-remove').setDescription('Désactiver l\'IA dans un salon')
+      .addChannelOption(o => o.setName('salon').setDescription('Salon à désactiver').setRequired(true).addChannelTypes(ChannelType.GuildText)))
+    .addSubcommand(s => s.setName('list').setDescription('Voir les salons où l\'IA est active'))
+    .addSubcommand(s => s.setName('persona').setDescription('(Staff) Changer la personnalité de l\'IA')
+      .addStringOption(o => o.setName('texte').setDescription('Instruction de personnalité (vide = remettre par défaut)').setMaxLength(300)))
+    .addSubcommand(s => s.setName('reset').setDescription('Réinitialiser l\'historique de conversation'))
+    .setDMPermission(false)
+    .toJSON(),
+];
 
 commands.push(...economy.commands, ...perms.commands, ...constructionCmds.commands, ...trade.commands, ...bf.commands);
 perms.setCommandNames(commands.map(c => c.name));
@@ -120,7 +137,6 @@ async function routeSelect(interaction, guild, g) {
     await constructionCmds.handleSelectMenu(interaction, client, g, db);
     return;
   }
-  // Fallback : un bouton non géré doit quand même recevoir une réponse, sinon Discord affiche "n'a pas répondu à temps"
   if (interaction.isButton() && !interaction.deferred && !interaction.replied) {
     await interaction.deferUpdate().catch(() => {});
   }
@@ -134,6 +150,71 @@ async function handleModCommand(interaction, guild, g) {
   if (commandName === 'modlogs') { await interaction.editReply('[INFO] No logs'); return; }
   if (commandName === 'help') { const embed = new EmbedBuilder().setTitle('Commands').setDescription('Help').setColor(0xFF0000); await interaction.editReply({ embeds: [embed] }); return; }
 }
+
+// ===== HANDLER COMMANDE /ai =====
+async function handleAiCommand(interaction, guild, g) {
+  const sub = interaction.options.getSubcommand();
+
+  // reset : pas besoin d'être staff
+  if (sub === 'reset') {
+    ai.resetHistory(interaction.channelId, interaction.user.id);
+    await interaction.reply({ content: '✅ Historique de conversation réinitialisé.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  // list : visible par tous
+  if (sub === 'list') {
+    const channels = (g.aiChannels || []);
+    if (!channels.length) {
+      await interaction.reply({ content: "ℹ️ L'IA n'est active dans aucun salon (elle répond quand même aux mentions).", flags: MessageFlags.Ephemeral });
+    } else {
+      await interaction.reply({ content: `📋 Salons avec IA active :\n${channels.map(id => `<#${id}>`).join('\n')}`, flags: MessageFlags.Ephemeral });
+    }
+    return;
+  }
+
+  // channel-add / channel-remove / persona : staff uniquement
+  if (!perms.canUseCommand(interaction.member, g, 'ai')) {
+    await interaction.reply({ content: '❌ Tu n\'as pas la permission d\'utiliser cette commande.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  if (sub === 'channel-add') {
+    const channel = interaction.options.getChannel('salon');
+    if (!g.aiChannels) g.aiChannels = [];
+    if (g.aiChannels.includes(channel.id)) {
+      await interaction.editReply(`ℹ️ L'IA est déjà active dans <#${channel.id}>.`);
+      return;
+    }
+    g.aiChannels.push(channel.id);
+    await db.save(guild.id);
+    await interaction.editReply(`✅ L'IA est maintenant active dans <#${channel.id}> (répond à tous les messages).`);
+    return;
+  }
+
+  if (sub === 'channel-remove') {
+    const channel = interaction.options.getChannel('salon');
+    if (!g.aiChannels || !g.aiChannels.includes(channel.id)) {
+      await interaction.editReply(`ℹ️ L'IA n'était pas active dans <#${channel.id}>.`);
+      return;
+    }
+    g.aiChannels = g.aiChannels.filter(id => id !== channel.id);
+    await db.save(guild.id);
+    await interaction.editReply(`✅ L'IA est désactivée dans <#${channel.id}>.`);
+    return;
+  }
+
+  if (sub === 'persona') {
+    const texte = interaction.options.getString('texte') || null;
+    g.aiPersona = texte;
+    await db.save(guild.id);
+    await interaction.editReply(texte ? `✅ Personnalité de l'IA mise à jour.` : `✅ Personnalité de l'IA remise par défaut.`);
+    return;
+  }
+}
+// ================================
 
 async function handleCommand(interaction) {
   const guild = interaction.guild;
@@ -156,6 +237,20 @@ async function handleCommand(interaction) {
   if (bf.isBFCommand(interaction.commandName)) { await bf.handleCommand(interaction); return; }
   if (economy.isEconomyCommand(interaction.commandName)) { await economy.handleCommand(interaction); return; }
   if (trade.isTradeCommand(interaction.commandName)) { await trade.handleCommand(interaction); return; }
+
+  // ===== ROUTING PERMS AJOUTÉ =====
+  if (perms.isPermCommand(interaction.commandName)) {
+    await perms.handleCommand(interaction);
+    return;
+  }
+  // ================================
+
+  // ===== ROUTING /ai AJOUTÉ =====
+  if (interaction.commandName === 'ai') {
+    await handleAiCommand(interaction, guild, g);
+    return;
+  }
+  // ==============================
 
   if (constructionCmds.isConstructionCommand(interaction.commandName)) {
     if (!perms.canUseCommand(interaction.member, g, interaction.commandName)) {
@@ -186,7 +281,6 @@ async function handleCommand(interaction) {
 }
 
 client.on(Events.InteractionCreate, async (interaction) => {
-  // DEBUG : à retirer une fois le problème réglé
   console.log('[INTERACTION]', interaction.type, interaction.commandName || interaction.customId || '');
   try {
     if (interaction.isAutocomplete()) { if (perms.isPermCommand(interaction.commandName)) await perms.autocomplete(interaction); else if (trade.isTradeCommand(interaction.commandName)) await trade.autocomplete(interaction); else if (bf.isBFCommand(interaction.commandName)) await bf.autocomplete(interaction); else await economy.autocomplete(interaction); return; }
@@ -209,6 +303,23 @@ client.on(Events.MessageCreate, async (message) => {
     if (!guild) return;
     const g = await getGuildConfig(guild.id);
     await automod.checkMessage(message, client, g, db);
+
+    // ===== RÉPONSE IA DANS LES SALONS CONFIGURÉS =====
+    if (g.aiEnabled !== false && Array.isArray(g.aiChannels) && g.aiChannels.includes(message.channelId)) {
+      const res = await ai.askClaude({
+        channelId: message.channelId,
+        userId: message.author.id,
+        userName: message.author.username,
+        userText: message.content,
+        persona: g.aiPersona,
+        serverContext: needsServerContext(message.content) ? buildServerContext(guild) : null,
+        speakerInfo: `${message.author.username} (no slash command)`,
+        guild,
+        canModerate: false,
+      });
+      if (res.text) message.reply({ content: res.text, allowedMentions: { repliedUser: false } }).catch(() => {});
+    }
+    // ==================================================
   } catch (error) {
     console.error('Message error:', error);
   }
@@ -221,7 +332,6 @@ client.on(Events.GuildCreate, async (guild) => {
 
 client.once(Events.ClientReady, async () => {
   console.log(`Connected as ${client.user.tag}`);
-  // Les commandes ne dépendent pas de la DB : on les enregistre d'abord
   await registerCommands();
   await dbReadyPromise.catch(e => console.error('DB init failed:', e));
   console.log(`${client.guilds.cache.size} server(s)`);
