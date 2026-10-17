@@ -14,7 +14,7 @@
 // ================================================================
 const {
   SlashCommandBuilder, ChannelType, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
-  ModalBuilder, TextInputBuilder, TextInputStyle, PermissionFlagsBits, AttachmentBuilder,
+  ModalBuilder, TextInputBuilder, TextInputStyle, PermissionFlagsBits, AttachmentBuilder, MessageFlags,
 } = require('discord.js');
 const db = require('./db');
 const perms = require('./perms');
@@ -139,8 +139,8 @@ async function handleCommand(interaction) {
   const sub = interaction.options.getSubcommand();
 
   if (name === 'tradeconfig') {
-    if (!perms.canUseCommand(interaction.member, g, 'tradeconfig')) { await interaction.reply({ content: NO_PERM, ephemeral: true }); return; }
-    await interaction.deferReply({ ephemeral: true });
+    if (!perms.canUseCommand(interaction.member, g, 'tradeconfig')) { await interaction.reply({ content: NO_PERM, flags: MessageFlags.Ephemeral }); return; }
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const reply = (c) => interaction.editReply({ content: c, allowedMentions: { parse: [] } });
     if (sub === 'salon') {
       const ch = interaction.options.getChannel('salon');
@@ -171,11 +171,11 @@ async function handleCommand(interaction) {
 
   // ------------------------- /brainrot -------------------------
   if (sub === 'post') {
-    if (t.channelId && interaction.channelId !== t.channelId) { await interaction.reply({ content: `❌ Les annonces ne peuvent être postées que dans <#${t.channelId}>.`, ephemeral: true }); return; }
+    if (t.channelId && interaction.channelId !== t.channelId) { await interaction.reply({ content: `❌ Les annonces ne peuvent être postées que dans <#${t.channelId}>.`, flags: MessageFlags.Ephemeral }); return; }
     const existing = findOpenListing(t, interaction.user.id);
-    if (existing) { await interaction.reply({ content: `❌ Tu as déjà une annonce active : **${existing.itemName}**. Retire-la d'abord (bouton **Retirer** sur son message, ou \`/brainrot remove\`).`, ephemeral: true }); return; }
+    if (existing) { await interaction.reply({ content: `❌ Tu as déjà une annonce active : **${existing.itemName}**. Retire-la d'abord (bouton **Retirer** sur son message, ou \`/brainrot remove\`).`, flags: MessageFlags.Ephemeral }); return; }
     const photo = interaction.options.getAttachment('photo');
-    if (!photo.contentType || !photo.contentType.startsWith('image/')) { await interaction.reply({ content: '❌ Le fichier joint doit être une image.', ephemeral: true }); return; }
+    if (!photo.contentType || !photo.contentType.startsWith('image/')) { await interaction.reply({ content: '❌ Le fichier joint doit être une image.', flags: MessageFlags.Ephemeral }); return; }
     await interaction.deferReply();
     const targetChannel = t.channelId ? (guild.channels.cache.get(t.channelId) || interaction.channel) : interaction.channel;
     const { listing } = await publishListing(guild, t, targetChannel, interaction.user, {
@@ -185,7 +185,7 @@ async function handleCommand(interaction) {
     return;
   }
 
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const reply = (c, extra = {}) => interaction.editReply({ content: c, allowedMentions: { parse: [] }, ...extra });
 
   if (sub === 'mine') {
@@ -262,7 +262,7 @@ function collectPhotoAndPublish(interaction, guild, t, fields) {
 // ----------------------------------------------------------------
 async function handleComponent(interaction) {
   const id = interaction.customId;
-  const eph = (payload) => interaction.reply({ ephemeral: true, allowedMentions: { parse: [] }, ...(typeof payload === 'string' ? { content: payload } : payload) });
+  const eph = (payload) => interaction.reply({ flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] }, ...(typeof payload === 'string' ? { content: payload } : payload) });
 
   // ---------- Accepter / Refuser (cliqué dans le DM du propriétaire, donc
   // AUCUN interaction.guild ici — c'est pour ça que ça ne répondait pas :
@@ -316,7 +316,7 @@ async function handleComponent(interaction) {
   if (interaction.isModalSubmit() && id === 'trade:panelmodal') {
     const existing = findOpenListing(t, interaction.user.id);
     if (existing) { await eph(`❌ Tu as déjà une annonce active : **${existing.itemName}**. Retire-la d'abord.`); return; }
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     await interaction.editReply(`📸 Envoie maintenant la **photo** de ton brainrot ici, dans ce salon (tu as ${Math.round(PHOTO_WAIT_MS / 60000)} minutes).`);
     collectPhotoAndPublish(interaction, guild, t, {
       itemName: interaction.fields.getTextInputValue('nom'),
@@ -356,7 +356,7 @@ async function handleComponent(interaction) {
     const listing = t.listings[id.split(':')[2]];
     if (!listing || listing.status !== 'open') { await eph('❌ Cette annonce n\'est plus disponible.'); return; }
     const offerText = interaction.fields.getTextInputValue('offer');
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const owner = await guild.members.fetch(listing.ownerId).catch(() => null);
     if (!owner) { await interaction.editReply('❌ Le propriétaire de cette annonce n\'est plus sur le serveur.'); return; }
