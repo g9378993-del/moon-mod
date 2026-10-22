@@ -673,15 +673,18 @@ async function routeSelect(interaction) {
       await interaction.editReply({ content: '❌ Session expirée, relance `/deletechannel`.', embeds: [], components: [] });
       return;
     }
-    // Suppression en parallèle — pas de boucle séquentielle
-    const results = await Promise.all(ids.map(async (channelId) => {
+    // Suppression séquentielle avec délai — évite le rate limit Discord (2 req/s par guild)
+    const results = [];
+    for (const channelId of ids) {
       const channel = interaction.guild.channels.cache.get(channelId);
       if (channel && channel.deletable) {
         const ok = await channel.delete('Suppression confirmée par ' + interaction.user.tag).then(() => true).catch(() => false);
-        return ok ? 'deleted' : 'failed';
+        results.push(ok ? 'deleted' : 'failed');
+      } else {
+        results.push('failed');
       }
-      return 'failed';
-    }));
+      await new Promise(r => setTimeout(r, 600)); // 600ms entre chaque — sous le rate limit
+    }
     const deleted = results.filter(r => r === 'deleted').length;
     const failed = results.filter(r => r === 'failed').length;
     const msg = deleted > 0
