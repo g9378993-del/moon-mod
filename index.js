@@ -1412,7 +1412,7 @@ client.on(Events.MessageCreate, async (message) => {
 
 // Retry toutes les 10 minutes pour déverrouiller les salons IA si quota restauré
 setInterval(async () => {
-  for (const [guildId, g] of Object.entries(db.peek())) {
+  for (const [guildId, g] of Object.entries(db.peek() || {})) {
     if (!g.aiChat?.channelId || !g.aiChat?.locked) continue;
     try {
       const guild = client.guilds.cache.get(guildId);
