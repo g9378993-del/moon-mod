@@ -656,16 +656,31 @@ async function routeSelect(interaction) {
     return;
   }
 
-  // Confirmation de suppression de salon (construction commands)
+  // Menu de sélection des salons à supprimer (construction commands)
+  if (constructionCmds.isDeleteSelectMenu && constructionCmds.isDeleteSelectMenu(interaction.customId)) {
+    const g = db.get(interaction.guild.id);
+    await constructionCmds.handleSelectMenu(interaction, client, g, db);
+    return;
+  }
+
+  // Confirmation de suppression de salon(s) (construction commands)
   if (interaction.customId.startsWith('delete_confirm_')) {
-    const channelId = interaction.customId.split('_')[2];
-    const channel = interaction.guild.channels.cache.get(channelId);
-    if (channel && channel.deletable) {
-      await channel.delete('Suppression confirmée par ' + interaction.user.tag).catch(() => {});
-      await interaction.update({ content: '✅ Salon supprimé.', embeds: [], components: [] });
-    } else {
-      await interaction.update({ content: '❌ Impossible de supprimer le salon.', embeds: [], components: [] });
+    // customId = delete_confirm_id1,id2,id3,...
+    const ids = interaction.customId.slice('delete_confirm_'.length).split(',').filter(Boolean);
+    let deleted = 0, failed = 0;
+    for (const channelId of ids) {
+      const channel = interaction.guild.channels.cache.get(channelId);
+      if (channel && channel.deletable) {
+        await channel.delete('Suppression confirmée par ' + interaction.user.tag).catch(() => { failed++; return; });
+        deleted++;
+      } else {
+        failed++;
+      }
     }
+    const msg = deleted > 0
+      ? `✅ ${deleted} salon(s) supprimé(s).` + (failed > 0 ? ` ⚠️ ${failed} échec(s).` : '')
+      : `❌ Impossible de supprimer les salons.`;
+    await interaction.update({ content: msg, embeds: [], components: [] });
     return;
   }
   if (interaction.customId.startsWith('delete_cancel_')) {

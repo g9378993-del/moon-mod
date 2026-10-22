@@ -27,12 +27,25 @@ async function handleCommand(interaction, client, g, db) {
       return;
     }
     if (cmd === 'deletechannel') {
-      const chans = interaction.guild.channels.cache.filter(c => c.deletable).first(5);
+      const chans = [...interaction.guild.channels.cache.filter(c => c.deletable).values()]
+        .sort((a, b) => (a.rawPosition ?? 0) - (b.rawPosition ?? 0));
       if (chans.length === 0) { await interaction.editReply('[INFO] No channels'); return; }
-      const opts = chans.map(c => ({ label: c.name, value: c.id }));
-      const menu = new StringSelectMenuBuilder().setCustomId('delete_select_channels').setPlaceholder('Pick channels').addOptions(opts).setMaxValues(Math.min(5, opts.length));
-      const row = new ActionRowBuilder().addComponents(menu);
-      await interaction.editReply({ content: '[SELECT] Pick channels:', components: [row] });
+
+      // Discord : 25 options par menu, 5 menus par message → 125 max sélectionnables
+      const MAX = 125;
+      const selectable = chans.slice(0, MAX);
+      const rows = [];
+      for (let i = 0; i < selectable.length; i += 25) {
+        const chunk = selectable.slice(i, i + 25);
+        const menu = new StringSelectMenuBuilder()
+          .setCustomId(`delete_select_channels_${rows.length}`)
+          .setPlaceholder(`Salons ${i + 1}–${i + chunk.length} sur ${chans.length}`)
+          .addOptions(chunk.map(c => ({ label: c.name.slice(0, 100), value: c.id, description: c.parent?.name?.slice(0, 100) || undefined })))
+          .setMaxValues(chunk.length);
+        rows.push(new ActionRowBuilder().addComponents(menu));
+      }
+      const extra = chans.length > MAX ? `\n⚠️ Limite Discord : seuls les ${MAX} premiers sont affichés.` : '';
+      await interaction.editReply({ content: `[SELECT] Choisis les salons à supprimer (${chans.length} au total) :${extra}`, components: rows });
       return;
     }
     if (cmd === 'copychannels') {
@@ -63,7 +76,12 @@ async function handleSelectMenu(interaction, client, g, db) {
     new ButtonBuilder().setCustomId(`delete_confirm_${ids}`).setLabel('Confirm').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId('delete_cancel_multi').setLabel('Cancel').setStyle(ButtonStyle.Secondary)
   );
-  await interaction.update({ content: `[CONFIRM] Delete: ${names}?`, components: [btn] });
+  // On garde tous les menus visibles mais on remplace le contenu par la confirmation
+  await interaction.update({ content: `[CONFIRM] Supprimer : ${names} ?`, components: [btn] });
 }
 
-module.exports = { commands, isConstructionCommand, handleCommand, handleSelectMenu };
+function isDeleteSelectMenu(customId) {
+  return customId.startsWith('delete_select_channels');
+}
+
+module.exports = { commands, isConstructionCommand, handleCommand, handleSelectMenu, isDeleteSelectMenu };
