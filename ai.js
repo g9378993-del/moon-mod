@@ -198,6 +198,19 @@ async function withRetry(fn) {
   }
 }
 
+
+function isQuotaError(e) {
+  const msg = String(e.message || '').toLowerCase();
+  const status = String(e.apiStatus || '').toUpperCase();
+  // Daily quota exhausted — no retry possible
+  return (
+    status === 'RESOURCE_EXHAUSTED' ||
+    msg.includes('quota') ||
+    msg.includes('daily') ||
+    (msg.includes('rate_limit_exceeded') && !msg.match(/try again in [\d.]+s/i))
+  );
+}
+
 async function tryGroq({ system, historyMsgs, guild, canModerate, modExecutor }) {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new Error('GROQ_API_KEY non configurée');
@@ -307,6 +320,8 @@ async function askClaude({ channelId, userId, userName, userText, persona, serve
   ].filter(Boolean).join('\n');
 
   const errors = [];
+  let groqQuota = false;
+  let geminiQuota = false;
 
   if (process.env.GROQ_API_KEY) {
     try {
@@ -317,10 +332,13 @@ async function askClaude({ channelId, userId, userName, userText, persona, serve
       }
       errors.push('Groq : réponse vide');
     } catch (e) {
+      if (isQuotaError(e)) groqQuota = true;
       const msg = e.name === 'AbortError' ? 'délai dépassé' : (e.apiStatus ? `${e.apiStatus} : ${e.message}` : e.message);
       console.error('Groq indisponible, bascule sur Gemini :', msg);
       errors.push(`Groq (${msg})`);
     }
+  } else {
+    groqQuota = true; // pas configuré = considéré épuisé pour le calcul
   }
 
   if (process.env.GEMINI_API_KEY) {
@@ -332,13 +350,18 @@ async function askClaude({ channelId, userId, userName, userText, persona, serve
       }
       errors.push('Gemini : réponse vide');
     } catch (e) {
+      if (isQuotaError(e)) geminiQuota = true;
       const msg = e.name === 'AbortError' ? 'délai dépassé' : (e.apiStatus ? `${e.apiStatus} : ${e.message}` : e.message);
       console.error('Gemini indisponible :', msg);
       errors.push(`Gemini (${msg})`);
     }
+  } else {
+    geminiQuota = true; // pas configuré
   }
 
-  return { error: `Les deux IA sont indisponibles pour le moment : ${errors.join(' | ')}` };
+  // Les deux sont épuisées (quota journalier) — pas une panne temporaire
+  const quotaExhausted = groqQuota && geminiQuota;
+  return { error: `Les deux IA sont indisponibles pour le moment : ${errors.join(' | ')}`, quotaExhausted };
 }
 
 module.exports = { askClaude, resetHistory };

@@ -436,6 +436,13 @@ const commands = [
     .addBooleanOption((o) => o.setName('rapide').setDescription('Trace seulement, sans dévirtualisation (plus rapide, moins complet)')),
 
   new SlashCommandBuilder().setName('help').setDescription('Voir toutes les commandes'),
+  new SlashCommandBuilder().setName('aichat')
+    .setDescription('(Admin) Configurer le salon IA public')
+    .addSubcommand((s) => s.setName('setup').setDescription('Définir le salon IA public')
+      .addChannelOption((o) => o.setName('salon').setDescription('Salon où tout le monde peut parler à l\'IA').setRequired(true))
+      .addStringOption((o) => o.setName('personnalite').setDescription('Personnalité de l\'IA (optionnel)').setMaxLength(200)))
+    .addSubcommand((s) => s.setName('disable').setDescription('Désactiver le salon IA public'))
+    .addSubcommand((s) => s.setName('info').setDescription('Voir la configuration du salon IA')),
 ].map((c) => c.setDMPermission(false).toJSON());
 
 commands.push(...economy.commands, ...perms.commands, ...constructionCmds.commands, ...trade.commands, ...bf.commands);
@@ -1001,6 +1008,42 @@ async function handleModCommand(interaction, guild, g) {
     if (sub === 'reset') { ai.resetHistory(interaction.channelId, interaction.user.id); await reply('🧹 Conversation oubliée.'); return; }
   }
 
+  if (cmd === 'aichat') {
+    if (!perms.canUseCommand(interaction.member, g, 'aichat')) { await reply('❌ Réservé au staff.'); return; }
+    const sub = interaction.options.getSubcommand();
+    if (sub === 'setup') {
+      const channel = interaction.options.getChannel('salon');
+      const personnalite = interaction.options.getString('personnalite') || null;
+      if (!g.aiChat) g.aiChat = {};
+      g.aiChat.channelId = channel.id;
+      g.aiChat.persona = personnalite;
+      g.aiChat.locked = false;
+      await db.save(guild.id);
+      // S'assurer que le salon est déverrouillé
+      try {
+        await channel.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: null });
+      } catch {}
+      await reply(`✅ Salon IA public configuré : ${channel}${personnalite ? `\nPersonnalité : *${personnalite}*` : ''}\nTout le monde peut y parler à l'IA. Le salon se verrouille automatiquement si le quota IA est épuisé.`);
+      return;
+    }
+    if (sub === 'disable') {
+      if (g.aiChat?.channelId) {
+        const ch = guild.channels.cache.get(g.aiChat.channelId);
+        if (ch) { try { await ch.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: null }); } catch {} }
+      }
+      g.aiChat = {};
+      await db.save(guild.id);
+      await reply('✅ Salon IA public désactivé.');
+      return;
+    }
+    if (sub === 'info') {
+      if (!g.aiChat?.channelId) { await reply('ℹ️ Aucun salon IA public configuré. Utilise `/aichat setup`.'); return; }
+      const status = g.aiChat.locked ? '🔒 Verrouillé (quota épuisé)' : '🟢 Actif';
+      await reply(`📋 Salon IA public : <#${g.aiChat.channelId}>\nStatut : ${status}\nPersonnalité : ${g.aiChat.persona || 'par défaut'}`);
+      return;
+    }
+  }
+
   if (cmd === 'scanalts') {
     const am = g.automod;
     const minDays = interaction.options.getInteger('age_min_jours') ?? am.antialts?.minAccountAgeDays ?? 7;
@@ -1271,7 +1314,8 @@ client.on(Events.MessageCreate, async (message) => {
     const g = db.get(message.guild.id);
     const mentioned = message.mentions.has(client.user.id);
     const inAiChannel = g.aiChannels.includes(message.channelId);
-    if (!inAiChannel && !(mentioned && g.aiEnabled)) return;
+    const inAiChat = g.aiChat?.channelId === message.channelId;
+    if (!inAiChannel && !inAiChat && !(mentioned && g.aiEnabled)) return;
 
     // Fichier .lua/.luau/.txt joint : déobfuscation directe (vrai outil, pas
     // l'IA — plus fiable pour du bytecode VM obfusqué), staff uniquement.
@@ -1302,13 +1346,64 @@ client.on(Events.MessageCreate, async (message) => {
     if (!text) return;
     await message.channel.sendTyping().catch(() => {});
     const canModerate = perms.hasStaff(message.member, g);
-    const res = await ai.askClaude({ channelId: message.channelId, userId: message.author.id, userName: message.author.username, userText: text, persona: g.aiPersona, serverContext: needsServerContext(text) ? buildServerContext(message.guild) : null, speakerInfo: buildSpeakerInfo(message.member), guild: message.guild, canModerate, modExecutor: canModerate ? (args) => executeModAction({ guild: message.guild, actorMember: message.member, ...args }) : null });
+    const persona = inAiChat ? (g.aiChat?.persona || g.aiPersona) : g.aiPersona;
+    const res = await ai.askClaude({ channelId: message.channelId, userId: message.author.id, userName: message.author.username, userText: text, persona, serverContext: needsServerContext(text) ? buildServerContext(message.guild) : null, speakerInfo: buildSpeakerInfo(message.member), guild: message.guild, canModerate, modExecutor: canModerate ? (args) => executeModAction({ guild: message.guild, actorMember: message.member, ...args }) : null });
+
+    // AI Chat public : réponse publique + gestion quota lock/unlock
+    if (inAiChat) {
+      if (res.quotaExhausted && !g.aiChat.locked) {
+        // Quota épuisé → verrouiller le salon
+        g.aiChat.locked = true;
+        await db.save(message.guild.id);
+        try {
+          await message.channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: false });
+          await message.channel.send('🔒 **Salon temporairement verrouillé** — Le quota IA journalier est épuisé. Le salon se déverrouillera automatiquement dès que l\'IA sera à nouveau disponible.');
+        } catch {}
+        return;
+      }
+      if (!res.error) {
+        // Succès → déverrouiller si nécessaire
+        if (g.aiChat.locked) {
+          g.aiChat.locked = false;
+          await db.save(message.guild.id);
+          try {
+            await message.channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: null });
+            await message.channel.send('🔓 **Salon déverrouillé** — L\'IA est à nouveau disponible !');
+          } catch {}
+        }
+        await message.reply({ content: res.text, allowedMentions: { repliedUser: true } });
+      }
+      dashboard.recordAiExchange({ blocked: !!res.error });
+      dashboard.pushLog('ai', `[AI Chat] Réponse à <b>${message.author.username}</b> dans <b>#${message.channel.name}</b>`);
+      return;
+    }
+
     const out = res.error ? `❌ ${res.error}` : res.text;
     dashboard.recordAiExchange({ blocked: !!res.error });
     dashboard.pushLog('ai', `Réponse à <b>${message.author.username}</b> dans <b>#${message.channel.name}</b>`);
     await message.reply({ flags: MessageFlags.Ephemeral, content: out, allowedMentions: { repliedUser: false } });
   } catch (e) { console.error('Erreur MessageCreate :', e); }
 });
+
+// Retry toutes les 10 minutes pour déverrouiller les salons IA si quota restauré
+setInterval(async () => {
+  for (const [guildId, g] of Object.entries(db.peek())) {
+    if (!g.aiChat?.channelId || !g.aiChat?.locked) continue;
+    try {
+      const guild = client.guilds.cache.get(guildId);
+      if (!guild) continue;
+      const channel = guild.channels.cache.get(g.aiChat.channelId);
+      if (!channel) continue;
+      const res = await ai.askClaude({ channelId: g.aiChat.channelId, userId: 'system', userName: 'system', userText: 'test', persona: g.aiChat.persona || null, guild, canModerate: false, modExecutor: null });
+      if (!res.error) {
+        g.aiChat.locked = false;
+        await db.save(guildId);
+        await channel.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: null }).catch(() => {});
+        await channel.send('🔓 **Salon déverrouillé** — L\'IA est à nouveau disponible !').catch(() => {});
+      }
+    } catch {}
+  }
+}, 10 * 60 * 1000);
 
 client.on(Events.GuildMemberAdd, async (member) => {
   try { 
