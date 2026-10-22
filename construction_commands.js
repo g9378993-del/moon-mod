@@ -11,6 +11,28 @@ function isConstructionCommand(name) {
   return ['buildmode', 'createchannel', 'deletechannel', 'copychannels'].includes(name);
 }
 
+// Stockage temporaire des sélections en cours (évite la limite 100 chars sur customId)
+// Map<token, { ids: string[], expiresAt: number }>
+const pendingSelections = new Map();
+
+function storePending(ids) {
+  // token court : timestamp hex + random 4 chars
+  const token = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  pendingSelections.set(token, { ids, expiresAt: Date.now() + 5 * 60 * 1000 }); // expire 5 min
+  // Nettoyage opportuniste des entrées expirées
+  for (const [k, v] of pendingSelections) {
+    if (v.expiresAt < Date.now()) pendingSelections.delete(k);
+  }
+  return token;
+}
+
+function popPending(token) {
+  const entry = pendingSelections.get(token);
+  if (!entry) return null;
+  pendingSelections.delete(token);
+  return entry.ids;
+}
+
 async function handleCommand(interaction, client, g, db) {
   const cmd = interaction.commandName;
   try {
@@ -71,12 +93,13 @@ async function handleSelectMenu(interaction, client, g, db) {
   const sel = interaction.values;
   if (!sel || sel.length === 0) { await interaction.update({ content: '[INFO] None selected', components: [] }); return; }
   const names = sel.map(id => interaction.guild.channels.cache.get(id)?.name || '?').join(', ');
-  const ids = sel.join(',');
+
+  // Stocker les IDs en mémoire, passer seulement un token court dans le customId
+  const token = storePending(sel);
   const btn = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`delete_confirm_${ids}`).setLabel('Confirm').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(`delete_confirm_${token}`).setLabel('Confirm').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId('delete_cancel_multi').setLabel('Cancel').setStyle(ButtonStyle.Secondary)
   );
-  // On garde tous les menus visibles mais on remplace le contenu par la confirmation
   await interaction.update({ content: `[CONFIRM] Supprimer : ${names} ?`, components: [btn] });
 }
 
@@ -84,4 +107,4 @@ function isDeleteSelectMenu(customId) {
   return customId.startsWith('delete_select_channels');
 }
 
-module.exports = { commands, isConstructionCommand, handleCommand, handleSelectMenu, isDeleteSelectMenu };
+module.exports = { commands, isConstructionCommand, handleCommand, handleSelectMenu, isDeleteSelectMenu, popPending };

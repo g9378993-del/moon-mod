@@ -665,8 +665,13 @@ async function routeSelect(interaction) {
 
   // Confirmation de suppression de salon(s) (construction commands)
   if (interaction.customId.startsWith('delete_confirm_')) {
-    // customId = delete_confirm_id1,id2,id3,...
-    const ids = interaction.customId.slice('delete_confirm_'.length).split(',').filter(Boolean);
+    // customId = delete_confirm_<token> — IDs récupérés depuis la map en mémoire
+    const token = interaction.customId.slice('delete_confirm_'.length);
+    const ids = constructionCmds.popPending ? constructionCmds.popPending(token) : null;
+    if (!ids || ids.length === 0) {
+      await interaction.update({ content: '❌ Session expirée, relance `/deletechannel`.', embeds: [], components: [] });
+      return;
+    }
     let deleted = 0, failed = 0;
     for (const channelId of ids) {
       const channel = interaction.guild.channels.cache.get(channelId);
