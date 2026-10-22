@@ -665,27 +665,29 @@ async function routeSelect(interaction) {
 
   // Confirmation de suppression de salon(s) (construction commands)
   if (interaction.customId.startsWith('delete_confirm_')) {
-    // customId = delete_confirm_<token> — IDs récupérés depuis la map en mémoire
+    // deferUpdate immédiatement — évite le timeout Discord (3s max)
+    await interaction.deferUpdate();
     const token = interaction.customId.slice('delete_confirm_'.length);
     const ids = constructionCmds.popPending ? constructionCmds.popPending(token) : null;
     if (!ids || ids.length === 0) {
-      await interaction.update({ content: '❌ Session expirée, relance `/deletechannel`.', embeds: [], components: [] });
+      await interaction.editReply({ content: '❌ Session expirée, relance `/deletechannel`.', embeds: [], components: [] });
       return;
     }
-    let deleted = 0, failed = 0;
-    for (const channelId of ids) {
+    // Suppression en parallèle — pas de boucle séquentielle
+    const results = await Promise.all(ids.map(async (channelId) => {
       const channel = interaction.guild.channels.cache.get(channelId);
       if (channel && channel.deletable) {
-        await channel.delete('Suppression confirmée par ' + interaction.user.tag).catch(() => { failed++; return; });
-        deleted++;
-      } else {
-        failed++;
+        const ok = await channel.delete('Suppression confirmée par ' + interaction.user.tag).then(() => true).catch(() => false);
+        return ok ? 'deleted' : 'failed';
       }
-    }
+      return 'failed';
+    }));
+    const deleted = results.filter(r => r === 'deleted').length;
+    const failed = results.filter(r => r === 'failed').length;
     const msg = deleted > 0
       ? `✅ ${deleted} salon(s) supprimé(s).` + (failed > 0 ? ` ⚠️ ${failed} échec(s).` : '')
       : `❌ Impossible de supprimer les salons.`;
-    await interaction.update({ content: msg, embeds: [], components: [] });
+    await interaction.editReply({ content: msg, embeds: [], components: [] });
     return;
   }
   if (interaction.customId.startsWith('delete_cancel_')) {
