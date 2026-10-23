@@ -1321,6 +1321,8 @@ async function routeInteraction(interaction) {
   if (interaction.commandName === 'diag') { await handleDiag(interaction); return; }
   if (!interaction.guildId) { await interaction.reply({ flags: MessageFlags.Ephemeral, content: 'Utilise ça dans un serveur.'}); return; }
 
+  await dbReadyPromise;
+
   const guild = interaction.guild;
   const g = db.get(guild.id);
 
@@ -1377,7 +1379,7 @@ async function routeInteraction(interaction) {
     return;
   }
 
-  const nonStaffAllowed = new Set(['warnings', 'help']); // /warnings gère lui-même le cas "soi-même"
+  const nonStaffAllowed = new Set(['warnings', 'help', 'findscript']); // /warnings gère lui-même le cas "soi-même"
   if (!nonStaffAllowed.has(interaction.commandName) && !perms.canUseCommand(interaction.member, g, interaction.commandName)) {
     await interaction.reply({ flags: MessageFlags.Ephemeral, content: "❌ Tu n'as pas la permission d'utiliser cette commande (Administrateur, Gérer le serveur, ou un rôle autorisé via `/staffrole`)."});
     return;

@@ -45,6 +45,7 @@ const grantHas = (gr, cmd) => !!gr && (!!gr.all || (Array.isArray(gr.cmds) && gr
 
 // Accès à TOUT (= staff complet) : base, ou "tout" donné via /permuser ou /staffrole.
 function hasStaff(member, g) {
+  if (!member) return false;
   if (hasBase(member, g)) return true;
   ensure(g);
   if (grantAll(g.permUsers[member.id])) return true;
@@ -52,6 +53,8 @@ function hasStaff(member, g) {
 }
 // Accès à UNE commande précise.
 function canUseCommand(member, g, cmd) {
+  if (!member) return false;
+  ensure(g);
   if (hasStaff(member, g)) return true;
   if (grantHas(g.permUsers[member.id], cmd)) return true;
   return member.roles.cache.some((r) => grantHas(g.permRoles[r.id], cmd));
@@ -114,7 +117,11 @@ function grantRemove(store, id, cmd) {
 async function handleCommand(interaction) {
   const guild = interaction.guild;
   const g = db.get(guild.id);
+  const needsInit = !g.permUsers || !g.permRoles;
   ensure(g);
+  // Si les champs n'existaient pas encore en DB, on les persiste tout de suite
+  // pour éviter que des modifications ultérieures écrasent un objet undefined.
+  if (needsInit) await db.save(guild.id).catch(() => {});
   if (!hasBase(interaction.member, g)) {
     await interaction.reply({ content: '❌ Seuls les Administrateurs / Gérer le serveur / rôles staff (accès complet) peuvent gérer les permissions.', flags: MessageFlags.Ephemeral });
     return;
