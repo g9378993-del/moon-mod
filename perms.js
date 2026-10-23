@@ -23,6 +23,25 @@ let _syncCommandPerms = null;
 function setSyncFn(fn) { _syncCommandPerms = fn; }
 async function syncPerms(guild) { if (_syncCommandPerms) await _syncCommandPerms(guild).catch(() => {}); }
 
+// Envoie un MP au membre pour lui expliquer comment activer la commande dans Discord.
+async function sendPermDM(client, userId, guildName, cmdNames) {
+  try {
+    const user = await client.users.fetch(userId);
+    const list = cmdNames.map(c => `\`/${c}\``).join(', ');
+    const steps = [
+      `1. Ouvre **${guildName}** sur Discord`,
+      `2. Clique sur le nom du serveur (en haut à gauche) → **Paramètres du serveur**`,
+      `3. Va dans **Intégrations** → trouve le bot **Moon Manager**`,
+      `4. Dans la liste des commandes, active ${list}`,
+      `5. Clique **Enregistrer** — la commande apparaît maintenant dans ton menu /`,
+    ].join('\n');
+    await user.send(`✅ Tu as reçu l'accès à ${list} sur **${guildName}**.\n\nPour que la commande apparaisse dans ton menu \`/\`, suis ces étapes :\n${steps}`);
+  } catch (e) { /* MP fermés, tant pis */ }
+}
+
+let _discordClient = null;
+function setClient(c) { _discordClient = c; }
+
 function ensure(g) {
   if (!g.permUsers || typeof g.permUsers !== 'object') g.permUsers = {};
   if (!g.permRoles || typeof g.permRoles !== 'object') g.permRoles = {};
@@ -154,6 +173,11 @@ async function handleCommand(interaction) {
       await db.save(guild.id);
       await syncPerms(guild);
       await reply(`✅ <@${user.id}> peut maintenant utiliser ${what}.`);
+      // MP au membre avec les instructions pour activer la commande dans Discord UI
+      if (_discordClient) {
+        const cmdNames = cmd ? [cmd] : commandNames;
+        await sendPermDM(_discordClient, user.id, guild.name, cmdNames);
+      }
       return;
     }
     const r = grantRemove(g.permUsers, user.id, cmd);
@@ -203,4 +227,4 @@ async function handleCommand(interaction) {
   await reply(`✅ <@&${role.id}> ne peut plus utiliser ${what}.`);
 }
 
-module.exports = { commands, isPermCommand, handleCommand, autocomplete, setCommandNames, setSyncFn, hasStaff, canUseCommand, hasBase };
+module.exports = { commands, isPermCommand, handleCommand, autocomplete, setCommandNames, setSyncFn, setClient, hasStaff, canUseCommand, hasBase };
