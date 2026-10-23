@@ -1329,6 +1329,15 @@ async function routeInteraction(interaction) {
     return;
   }
 
+  if (interaction.commandName === 'findscript') {
+    // findscript est accessible à tous — pas de check staff.
+    // Il gère son propre deferReply() dans handleModCommand,
+    // donc on l'envoie directement là-bas sans redéférer ici.
+    const gFs = db.get(guild.id);
+    await handleModCommand(interaction, guild, gFs);
+    return;
+  }
+
   if (interaction.commandName === 'ask') {
     await interaction.deferReply();
     const question = interaction.options.getString('question');
