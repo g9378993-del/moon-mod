@@ -1023,15 +1023,14 @@ async function handleModCommand(interaction, guild, g) {
     await interaction.deferReply();
 
     try {
-      const url = `https://scriptblox.com/api/script/search?q=${encodeURIComponent(query)}&max=10&mode=free`;
-      const res = await fetch(url);
+      const url = `https://scriptblox.com/api/script/search?q=${encodeURIComponent(query)}&max=20`;
+      const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
       if (!res.ok) throw new Error(`ScriptBlox API: ${res.status}`);
       const data = await res.json();
-      const scripts = (data.result?.scripts || []).filter(s => {
-        if (typeFilter === 'free') return !s.isPatched && s.scriptType !== 'paid';
-        if (typeFilter === 'paid') return s.scriptType === 'paid';
-        return true;
-      }).slice(0, 5);
+      let scripts = (data.result?.scripts || []);
+      if (typeFilter === 'free') scripts = scripts.filter(s => s.scriptType !== 'paid');
+      if (typeFilter === 'paid') scripts = scripts.filter(s => s.scriptType === 'paid');
+      scripts = scripts.slice(0, 5);
 
       if (!scripts.length) {
         await interaction.editReply({ content: `❌ Aucun script trouvé pour **${query}**.` });
@@ -1039,16 +1038,20 @@ async function handleModCommand(interaction, guild, g) {
       }
 
       const embeds = scripts.map((s, i) => {
+        const title = `${i + 1}. ${String(s.title || s.game?.name || 'Script').slice(0, 250)}`;
+        const gameName = String(s.game?.name || query || '?').slice(0, 1024);
         const e = new EmbedBuilder()
           .setColor(s.scriptType === 'paid' ? 0xFFD700 : 0x5865F2)
-          .setTitle(`${i + 1}. ${s.title || s.game?.name || 'Script'}`)
+          .setTitle(title)
           .setURL(`https://scriptblox.com/script/${s.slug || s._id}`)
           .addFields(
-            { name: '🎮 Jeu', value: s.game?.name || query, inline: true },
+            { name: '🎮 Jeu', value: gameName, inline: true },
             { name: '💰 Type', value: s.scriptType === 'paid' ? '💎 Payant' : '🆓 Gratuit', inline: true },
             { name: '👁️ Vues', value: String(s.views || 0), inline: true },
           );
-        if (s.features?.length) e.addFields({ name: '✨ Features', value: s.features.slice(0, 3).join(', '), inline: false });
+        if (Array.isArray(s.features) && s.features.length) {
+          e.addFields({ name: '✨ Features', value: s.features.slice(0, 3).join(', ').slice(0, 1024), inline: false });
+        }
         if (s.verified) e.setFooter({ text: '✅ Script vérifié' });
         return e;
       });
