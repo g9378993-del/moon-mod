@@ -1396,15 +1396,20 @@ async function routeInteraction(interaction) {
   }
 
   if (interaction.commandName === 'findscript') {
-    // findscript est accessible à tous — pas de check staff.
-    // Il gère son propre deferReply() dans handleModCommand,
-    // donc on l'envoie directement là-bas sans redéférer ici.
+    if (!perms.canUseCommand(interaction.member, g, 'findscript')) {
+      await interaction.reply({ flags: MessageFlags.Ephemeral, content: "❌ Tu n'as pas la permission d'utiliser `/findscript`." });
+      return;
+    }
     const gFs = db.get(guild.id);
     await handleModCommand(interaction, guild, gFs);
     return;
   }
 
   if (interaction.commandName === 'ask') {
+    if (!perms.canUseCommand(interaction.member, g, 'ask')) {
+      await interaction.reply({ flags: MessageFlags.Ephemeral, content: "❌ Tu n'as pas la permission d'utiliser `/ask`." });
+      return;
+    }
     await interaction.deferReply();
     const question = interaction.options.getString('question');
     const canModerate = perms.hasStaff(interaction.member, g);
@@ -1413,7 +1418,7 @@ async function routeInteraction(interaction) {
     return;
   }
 
-  const nonStaffAllowed = new Set(['warnings', 'help', 'findscript']); // /warnings gère lui-même le cas "soi-même"
+  const nonStaffAllowed = new Set(['warnings', 'help']); // /warnings gère lui-même le cas "soi-même"
   if (!nonStaffAllowed.has(interaction.commandName) && !perms.canUseCommand(interaction.member, g, interaction.commandName)) {
     await interaction.reply({ flags: MessageFlags.Ephemeral, content: "❌ Tu n'as pas la permission d'utiliser cette commande (Administrateur, Gérer le serveur, ou un rôle autorisé via `/staffrole`)."});
     return;
@@ -1528,7 +1533,7 @@ client.on(Events.MessageCreate, async (message) => {
 
 // Retry toutes les 10 minutes pour déverrouiller les salons IA si quota restauré
 setInterval(async () => {
-  for (const [guildId, g] of Object.entries(db.peek())) {
+  for (const [guildId, g] of Object.entries(db.peek() || {})) {
     if (!g.aiChat?.channelId || !g.aiChat?.locked) continue;
     try {
       const guild = client.guilds.cache.get(guildId);
