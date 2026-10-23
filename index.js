@@ -437,7 +437,7 @@ const commands = [
 
   new SlashCommandBuilder().setName('help').setDescription('Voir toutes les commandes'),
   new SlashCommandBuilder().setName('findscript')
-    .setDescription('Rechercher des scripts Roblox sur ScriptBlox')
+    .setDescription('Rechercher des scripts Roblox')
     .addStringOption((o) => o.setName('jeu').setDescription('Nom du jeu Roblox').setRequired(true).setMaxLength(100))
     .addStringOption((o) => o.setName('type').setDescription('Type de script').addChoices(
       { name: '🆓 Gratuit', value: 'free' },
@@ -452,15 +452,30 @@ const commands = [
       .addStringOption((o) => o.setName('personnalite').setDescription('Personnalité de l\'IA (optionnel)').setMaxLength(200)))
     .addSubcommand((s) => s.setName('disable').setDescription('Désactiver le salon IA public'))
     .addSubcommand((s) => s.setName('info').setDescription('Voir la configuration du salon IA')),
-].map((c) => c.setDMPermission(false).toJSON());
+].map((c) => {
+  c.setDMPermission(false);
+  // Commandes publiques : visibles par tout le monde.
+  const PUBLIC = new Set(['warnings', 'help', 'ask', 'findscript']);
+  if (!PUBLIC.has(c.name)) {
+    // Par défaut : visible uniquement aux Administrateurs natifs Discord.
+    // Les overwrites de visibilité pour les autres rôles/membres sont gérés
+    // dynamiquement par syncCommandPerms() après chaque /permuser ou /staffrole.
+    c.setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
+  }
+  return c.toJSON();
+});
 
 commands.push(...economy.commands, ...perms.commands, ...constructionCmds.commands, ...trade.commands, ...bf.commands);
 perms.setCommandNames(commands.map((c) => c.name));
+// Injecté après déclaration de syncCommandPerms (plus bas) — voir la ligne setSyncFn.
 
 
 const ownerCommands = [
   new SlashCommandBuilder().setName('diag').setDescription('(Toi uniquement) État du bot : stockage, doublons, serveurs'),
 ].map((c) => c.toJSON());
+
+// Map guildId → { commandName: commandId } — rempli après registerCommands.
+const guildCommandIds = new Map();
 
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -476,21 +491,78 @@ async function registerCommands() {
 
   for (const guild of client.guilds.cache.values()) {
     try {
-      await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, guild.id), { body });
+      const registered = await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, guild.id), { body });
       console.log(`✓ ${body.length} commandes enregistrees sur ${guild.name}`);
+      // Stocker name → id pour pouvoir pousser les overwrites de visibilité plus tard.
+      const idMap = {};
+      for (const cmd of registered) idMap[cmd.name] = cmd.id;
+      guildCommandIds.set(guild.id, idMap);
     } catch (err) {
       console.error(`❌ Erreur sur ${guild.name}:`, err.message);
     }
   }
 }
 
+// Synchronise les permission overwrites Discord pour toutes les commandes
+// restreintes d'un serveur, en fonction de g.staffRoles, g.permRoles, g.permUsers.
+// Discord affichera la commande uniquement aux personnes/rôles listés ici + admins natifs.
+// Injecté dans perms.js via setSyncFn pour éviter la dépendance circulaire.
+async function syncCommandPerms(guild) {
+  const idMap = guildCommandIds.get(guild.id);
+  if (!idMap) return; // commandes pas encore enregistrées
+  const g = db.get(guild.id);
+  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+  const PUBLIC = new Set(['warnings', 'help', 'ask', 'findscript']);
+
+  // Construire la liste des commandes à synchroniser (toutes les non-publiques).
+  const toSync = Object.entries(idMap).filter(([name]) => !PUBLIC.has(name));
+
+  for (const [cmdName, cmdId] of toSync) {
+    // Permissions de base : les rôles "staff complet" (g.staffRoles) voient tout.
+    const permissions = [];
+
+    for (const roleId of (g.staffRoles || [])) {
+      permissions.push({ id: roleId, type: 1 /* ROLE */, permission: true });
+    }
+
+    // Rôles avec accès "tout" via permRoles
+    for (const [roleId, gr] of Object.entries(g.permRoles || {})) {
+      if (gr.all || (Array.isArray(gr.cmds) && gr.cmds.includes(cmdName))) {
+        permissions.push({ id: roleId, type: 1, permission: true });
+      }
+    }
+
+    // Membres avec accès "tout" ou cette commande via permUsers
+    for (const [userId, gr] of Object.entries(g.permUsers || {})) {
+      if (gr.all || (Array.isArray(gr.cmds) && gr.cmds.includes(cmdName))) {
+        permissions.push({ id: userId, type: 2 /* USER */, permission: true });
+      }
+    }
+
+    try {
+      await rest.put(
+        Routes.applicationCommandPermissions(process.env.CLIENT_ID, guild.id, cmdId),
+        { body: { permissions } },
+      );
+    } catch (e) {
+      console.error(`[syncCommandPerms] Erreur sur /${cmdName} (${guild.name}) :`, e.message);
+    }
+  }
+}
+// Brancher syncCommandPerms dans perms.js maintenant qu'elle est définie.
+perms.setSyncFn(syncCommandPerms);
+
 // Un nouveau serveur ajoute le bot après le démarrage : on lui enregistre les
 // commandes tout de suite (sinon il faudrait attendre le prochain redémarrage).
 client.on(Events.GuildCreate, async (guild) => {
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
   try {
-    await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, guild.id), { body: [...commands, ...ownerCommands] });
+    const registered = await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, guild.id), { body: [...commands, ...ownerCommands] });
     console.log(`Commandes enregistrées instantanément sur le nouveau serveur ${guild.name} (${guild.id}).`);
+    const idMap = {};
+    for (const cmd of registered) idMap[cmd.name] = cmd.id;
+    guildCommandIds.set(guild.id, idMap);
+    await syncCommandPerms(guild).catch((e) => console.error(`[syncCommandPerms] ${guild.name} :`, e.message));
   } catch (err) {
     console.error(`Erreur enregistrement des commandes sur ${guild.name} (${guild.id}) :`, err);
   }
@@ -730,6 +802,10 @@ client.once(Events.ClientReady, async () => {
   await dbReadyPromise;
   console.log(`Serveurs actuels (${client.guilds.cache.size}) :`, [...client.guilds.cache.values()].map((g) => `${g.name} (${g.id})`).join(' | '));
   await registerCommands();
+  // Synchroniser les overwrites de visibilité Discord après l'enregistrement.
+  for (const guild of client.guilds.cache.values()) {
+    await syncCommandPerms(guild).catch((e) => console.error(`[syncCommandPerms] ${guild.name} :`, e.message));
+  }
   economy.startVoiceTracking(client);
   const st = db.getStatus();
   if (!st.persistent && process.env.OWNER_ID) {

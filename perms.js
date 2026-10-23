@@ -18,6 +18,11 @@ const PROTECTED = new Set(['permuser', 'staffrole']);
 let commandNames = [];
 function setCommandNames(names) { commandNames = [...new Set(names)].filter((n) => !PROTECTED.has(n)).sort(); }
 
+// Injecté depuis index.js après initialisation pour éviter la dépendance circulaire.
+let _syncCommandPerms = null;
+function setSyncFn(fn) { _syncCommandPerms = fn; }
+async function syncPerms(guild) { if (_syncCommandPerms) await _syncCommandPerms(guild).catch(() => {}); }
+
 function ensure(g) {
   if (!g.permUsers || typeof g.permUsers !== 'object') g.permUsers = {};
   if (!g.permRoles || typeof g.permRoles !== 'object') g.permRoles = {};
@@ -147,6 +152,7 @@ async function handleCommand(interaction) {
       if (user.bot) { await reply('❌ Impossible pour un bot.'); return; }
       grantAdd(g.permUsers, user.id, cmd);
       await db.save(guild.id);
+      await syncPerms(guild);
       await reply(`✅ <@${user.id}> peut maintenant utiliser ${what}.`);
       return;
     }
@@ -155,6 +161,7 @@ async function handleCommand(interaction) {
     if (r === 'is_all') { await reply(`❌ <@${user.id}> a accès à **toutes** les commandes. Pour lui retirer, lance \`/permuser remove\` **sans** préciser de commande.`); return; }
     if (r === 'missing') { await reply(`❌ <@${user.id}> n'avait pas accès à ${what}.`); return; }
     await db.save(guild.id);
+    await syncPerms(guild);
     await reply(`✅ <@${user.id}> ne peut plus utiliser ${r === 'all' ? '**aucune commande spéciale**' : what}.`);
     return;
   }
@@ -169,9 +176,10 @@ async function handleCommand(interaction) {
   const role = interaction.options.getRole('role');
   if (sub === 'add') {
     if (role.id === guild.id) { await reply('❌ Impossible avec @everyone.'); return; }
-    if (!cmd) { if (!g.staffRoles.includes(role.id)) g.staffRoles.push(role.id); } // "tout" = comme avant (staffRoles)
+    if (!cmd) { if (!g.staffRoles.includes(role.id)) g.staffRoles.push(role.id); }
     else grantAdd(g.permRoles, role.id, cmd);
     await db.save(guild.id);
+    await syncPerms(guild);
     await reply(`✅ <@&${role.id}> peut maintenant utiliser ${what}.`);
     return;
   }
@@ -182,6 +190,7 @@ async function handleCommand(interaction) {
     delete g.permRoles[role.id];
     if (!had) { await reply('❌ Ce rôle n\'avait aucune permission spéciale.'); return; }
     await db.save(guild.id);
+    await syncPerms(guild);
     await reply(`✅ <@&${role.id}> n'a plus aucune permission spéciale.`);
     return;
   }
@@ -190,7 +199,8 @@ async function handleCommand(interaction) {
   if (r === 'none') { await reply('❌ Ce rôle n\'a aucune permission spéciale.'); return; }
   if (r === 'missing') { await reply(`❌ <@&${role.id}> n'avait pas accès à ${what}.`); return; }
   await db.save(guild.id);
+  await syncPerms(guild);
   await reply(`✅ <@&${role.id}> ne peut plus utiliser ${what}.`);
 }
 
-module.exports = { commands, isPermCommand, handleCommand, autocomplete, setCommandNames, hasStaff, canUseCommand, hasBase };
+module.exports = { commands, isPermCommand, handleCommand, autocomplete, setCommandNames, setSyncFn, hasStaff, canUseCommand, hasBase };
