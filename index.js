@@ -454,14 +454,9 @@ const commands = [
     .addSubcommand((s) => s.setName('info').setDescription('Voir la configuration du salon IA')),
 ].map((c) => {
   c.setDMPermission(false);
-  // Commandes publiques : visibles par tout le monde.
-  const PUBLIC = new Set(['warnings', 'help', 'ask', 'findscript']);
-  if (!PUBLIC.has(c.name)) {
-    // Par défaut : visible uniquement aux Administrateurs natifs Discord.
-    // Les overwrites de visibilité pour les autres rôles/membres sont gérés
-    // dynamiquement par syncCommandPerms() après chaque /permuser ou /staffrole.
-    c.setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
-  }
+  // Toutes les commandes sont visibles par tout le monde dans le menu Discord.
+  // La vérification des permissions est faite en runtime dans le handler (perms.canUseCommand).
+  // setDefaultMemberPermissions(Administrator) cachait les commandes aux membres autorisés via /permuser.
   return c.toJSON();
 });
 
@@ -512,6 +507,8 @@ async function syncCommandPerms(guild) {
 }
 // Brancher syncCommandPerms dans perms.js maintenant qu'elle est définie.
 perms.setSyncFn(syncCommandPerms);
+// Injecter le client Discord dans perms.js pour les MPs /permuser add.
+perms.setClient(client);
 
 // Un nouveau serveur ajoute le bot après le démarrage : on lui enregistre les
 // commandes tout de suite (sinon il faudrait attendre le prochain redémarrage).
