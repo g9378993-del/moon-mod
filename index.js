@@ -503,51 +503,12 @@ async function registerCommands() {
   }
 }
 
-// Synchronise les permission overwrites Discord pour toutes les commandes
-// restreintes d'un serveur, en fonction de g.staffRoles, g.permRoles, g.permUsers.
-// Discord affichera la commande uniquement aux personnes/rôles listés ici + admins natifs.
-// Injecté dans perms.js via setSyncFn pour éviter la dépendance circulaire.
+// Discord a bloqué l'endpoint applicationCommandPermissions pour les bots (OAuth2 uniquement).
+// Les permissions sont vérifiées en runtime dans perms.js (canUseCommand / hasStaff).
+// Les commandes restent visibles uniquement aux Administrateurs natifs Discord par défaut
+// (setDefaultMemberPermissions dans la définition des commandes).
 async function syncCommandPerms(guild) {
-  const idMap = guildCommandIds.get(guild.id);
-  if (!idMap) return; // commandes pas encore enregistrées
-  const g = db.get(guild.id);
-  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-  const PUBLIC = new Set(['warnings', 'help', 'ask', 'findscript']);
-
-  // Construire la liste des commandes à synchroniser (toutes les non-publiques).
-  const toSync = Object.entries(idMap).filter(([name]) => !PUBLIC.has(name));
-
-  for (const [cmdName, cmdId] of toSync) {
-    // Permissions de base : les rôles "staff complet" (g.staffRoles) voient tout.
-    const permissions = [];
-
-    for (const roleId of (g.staffRoles || [])) {
-      permissions.push({ id: roleId, type: 1 /* ROLE */, permission: true });
-    }
-
-    // Rôles avec accès "tout" via permRoles
-    for (const [roleId, gr] of Object.entries(g.permRoles || {})) {
-      if (gr.all || (Array.isArray(gr.cmds) && gr.cmds.includes(cmdName))) {
-        permissions.push({ id: roleId, type: 1, permission: true });
-      }
-    }
-
-    // Membres avec accès "tout" ou cette commande via permUsers
-    for (const [userId, gr] of Object.entries(g.permUsers || {})) {
-      if (gr.all || (Array.isArray(gr.cmds) && gr.cmds.includes(cmdName))) {
-        permissions.push({ id: userId, type: 2 /* USER */, permission: true });
-      }
-    }
-
-    try {
-      await rest.put(
-        Routes.applicationCommandPermissions(process.env.CLIENT_ID, guild.id, cmdId),
-        { body: { permissions } },
-      );
-    } catch (e) {
-      console.error(`[syncCommandPerms] Erreur sur /${cmdName} (${guild.name}) :`, e.message);
-    }
-  }
+  // No-op : endpoint inaccessible aux bots depuis 2022.
 }
 // Brancher syncCommandPerms dans perms.js maintenant qu'elle est définie.
 perms.setSyncFn(syncCommandPerms);
