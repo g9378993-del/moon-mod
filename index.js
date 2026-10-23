@@ -445,6 +445,13 @@ const commands = [
       { name: '📜 Tous', value: 'all' }
     )),
 
+  new SlashCommandBuilder().setName('findscriptchannel')
+    .setDescription('(Admin) Configurer le salon public pour /findscript')
+    .addSubcommand((s) => s.setName('set').setDescription('Définir le salon où tout le monde peut utiliser /findscript')
+      .addChannelOption((o) => o.setName('salon').setDescription('Salon autorisé').setRequired(true)))
+    .addSubcommand((s) => s.setName('disable').setDescription('Désactiver le salon public (seuls les membres autorisés peuvent utiliser /findscript)'))
+    .addSubcommand((s) => s.setName('info').setDescription('Voir le salon configuré')),
+
   new SlashCommandBuilder().setName('aichat')
     .setDescription('(Admin) Configurer le salon IA public')
     .addSubcommand((s) => s.setName('setup').setDescription('Définir le salon IA public')
@@ -1396,12 +1403,40 @@ async function routeInteraction(interaction) {
   }
 
   if (interaction.commandName === 'findscript') {
-    if (!perms.canUseCommand(interaction.member, g, 'findscript')) {
-      await interaction.reply({ flags: MessageFlags.Ephemeral, content: "❌ Tu n'as pas la permission d'utiliser `/findscript`." });
+    const inPublicChannel = g.findScriptChannelId && interaction.channelId === g.findScriptChannelId;
+    if (!inPublicChannel && !perms.canUseCommand(interaction.member, g, 'findscript')) {
+      const channelMention = g.findScriptChannelId ? ` Utilise <#${g.findScriptChannelId}> pour y accéder librement.` : '';
+      await interaction.reply({ flags: MessageFlags.Ephemeral, content: `❌ Tu n'as pas la permission d'utiliser \`/findscript\`.${channelMention}` });
       return;
     }
     const gFs = db.get(guild.id);
     await handleModCommand(interaction, guild, gFs);
+    return;
+  }
+
+  if (interaction.commandName === 'findscriptchannel') {
+    if (!perms.hasBase(interaction.member, g)) {
+      await interaction.reply({ flags: MessageFlags.Ephemeral, content: '❌ Seuls les Administrateurs / Gérer le serveur peuvent configurer ce salon.' });
+      return;
+    }
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const sub = interaction.options.getSubcommand();
+    if (sub === 'set') {
+      const channel = interaction.options.getChannel('salon');
+      g.findScriptChannelId = channel.id;
+      await db.save(guild.id);
+      await interaction.editReply(`✅ Salon public pour \`/findscript\` défini sur <#${channel.id}>.\nTout le monde peut maintenant utiliser \`/findscript\` dans ce salon.`);
+    } else if (sub === 'disable') {
+      delete g.findScriptChannelId;
+      await db.save(guild.id);
+      await interaction.editReply('✅ Salon public désactivé. Seuls les membres autorisés via `/permuser` peuvent utiliser `/findscript`.');
+    } else if (sub === 'info') {
+      if (g.findScriptChannelId) {
+        await interaction.editReply(`📺 Salon public actuel : <#${g.findScriptChannelId}>\nTout le monde peut utiliser \`/findscript\` dans ce salon.`);
+      } else {
+        await interaction.editReply('📺 Aucun salon public configuré. Seuls les membres autorisés via `/permuser` peuvent utiliser `/findscript`.');
+      }
+    }
     return;
   }
 
