@@ -436,6 +436,15 @@ const commands = [
     .addBooleanOption((o) => o.setName('rapide').setDescription('Trace seulement, sans dévirtualisation (plus rapide, moins complet)')),
 
   new SlashCommandBuilder().setName('help').setDescription('Voir toutes les commandes'),
+  new SlashCommandBuilder().setName('findscript')
+    .setDescription('Rechercher des scripts Roblox sur ScriptBlox')
+    .addStringOption((o) => o.setName('jeu').setDescription('Nom du jeu Roblox').setRequired(true).setMaxLength(100))
+    .addStringOption((o) => o.setName('type').setDescription('Type de script').addChoices(
+      { name: '🆓 Gratuit', value: 'free' },
+      { name: '💎 Payant', value: 'paid' },
+      { name: '📜 Tous', value: 'all' }
+    )),
+
   new SlashCommandBuilder().setName('aichat')
     .setDescription('(Admin) Configurer le salon IA public')
     .addSubcommand((s) => s.setName('setup').setDescription('Définir le salon IA public')
@@ -656,41 +665,16 @@ async function routeSelect(interaction) {
     return;
   }
 
-  // Menu de sélection des salons à supprimer (construction commands)
-  if (constructionCmds.isDeleteSelectMenu && constructionCmds.isDeleteSelectMenu(interaction.customId)) {
-    const g = db.get(interaction.guild.id);
-    await constructionCmds.handleSelectMenu(interaction, client, g, db);
-    return;
-  }
-
-  // Confirmation de suppression de salon(s) (construction commands)
+  // Confirmation de suppression de salon (construction commands)
   if (interaction.customId.startsWith('delete_confirm_')) {
-    // deferUpdate immédiatement — évite le timeout Discord (3s max)
-    await interaction.deferUpdate();
-    const token = interaction.customId.slice('delete_confirm_'.length);
-    const ids = constructionCmds.popPending ? constructionCmds.popPending(token) : null;
-    if (!ids || ids.length === 0) {
-      await interaction.editReply({ content: '❌ Session expirée, relance `/deletechannel`.', embeds: [], components: [] });
-      return;
+    const channelId = interaction.customId.split('_')[2];
+    const channel = interaction.guild.channels.cache.get(channelId);
+    if (channel && channel.deletable) {
+      await channel.delete('Suppression confirmée par ' + interaction.user.tag).catch(() => {});
+      await interaction.update({ content: '✅ Salon supprimé.', embeds: [], components: [] });
+    } else {
+      await interaction.update({ content: '❌ Impossible de supprimer le salon.', embeds: [], components: [] });
     }
-    // Suppression séquentielle avec délai — évite le rate limit Discord (2 req/s par guild)
-    const results = [];
-    for (const channelId of ids) {
-      const channel = interaction.guild.channels.cache.get(channelId);
-      if (channel && channel.deletable) {
-        const ok = await channel.delete('Suppression confirmée par ' + interaction.user.tag).then(() => true).catch(() => false);
-        results.push(ok ? 'deleted' : 'failed');
-      } else {
-        results.push('failed');
-      }
-      await new Promise(r => setTimeout(r, 600)); // 600ms entre chaque — sous le rate limit
-    }
-    const deleted = results.filter(r => r === 'deleted').length;
-    const failed = results.filter(r => r === 'failed').length;
-    const msg = deleted > 0
-      ? `✅ ${deleted} salon(s) supprimé(s).` + (failed > 0 ? ` ⚠️ ${failed} échec(s).` : '')
-      : `❌ Impossible de supprimer les salons.`;
-    await interaction.editReply({ content: msg, embeds: [], components: [] });
     return;
   }
   if (interaction.customId.startsWith('delete_cancel_')) {
@@ -1031,6 +1015,60 @@ async function handleModCommand(interaction, guild, g) {
     if (sub === 'toggle') { g.aiEnabled = interaction.options.getString('etat') === 'on'; await db.save(guild.id); await reply(`✅ Réponse aux mentions : ${g.aiEnabled ? 'activée' : 'désactivée'}.`); return; }
     if (sub === 'persona') { g.aiPersona = interaction.options.getString('texte'); await db.save(guild.id); await reply('✅ Personnalité mise à jour.'); return; }
     if (sub === 'reset') { ai.resetHistory(interaction.channelId, interaction.user.id); await reply('🧹 Conversation oubliée.'); return; }
+  }
+
+  if (cmd === 'findscript') {
+    const query = interaction.options.getString('jeu');
+    const typeFilter = interaction.options.getString('type') || 'all';
+    await interaction.deferReply();
+
+    try {
+      const url = `https://scriptblox.com/api/script/search?q=${encodeURIComponent(query)}&max=10&mode=free`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`ScriptBlox API: ${res.status}`);
+      const data = await res.json();
+      const scripts = (data.result?.scripts || []).filter(s => {
+        if (typeFilter === 'free') return !s.isPatched && s.scriptType !== 'paid';
+        if (typeFilter === 'paid') return s.scriptType === 'paid';
+        return true;
+      }).slice(0, 5);
+
+      if (!scripts.length) {
+        await interaction.editReply({ content: `❌ Aucun script trouvé pour **${query}**.` });
+        return;
+      }
+
+      const embeds = scripts.map((s, i) => {
+        const e = new EmbedBuilder()
+          .setColor(s.scriptType === 'paid' ? 0xFFD700 : 0x5865F2)
+          .setTitle(`${i + 1}. ${s.title || s.game?.name || 'Script'}`)
+          .setURL(`https://scriptblox.com/script/${s.slug || s._id}`)
+          .addFields(
+            { name: '🎮 Jeu', value: s.game?.name || query, inline: true },
+            { name: '💰 Type', value: s.scriptType === 'paid' ? '💎 Payant' : '🆓 Gratuit', inline: true },
+            { name: '👁️ Vues', value: String(s.views || 0), inline: true },
+          );
+        if (s.features?.length) e.addFields({ name: '✨ Features', value: s.features.slice(0, 3).join(', '), inline: false });
+        if (s.verified) e.setFooter({ text: '✅ Script vérifié' });
+        return e;
+      });
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setLabel('🔍 Voir sur ScriptBlox')
+          .setStyle(ButtonStyle.Link)
+          .setURL(`https://scriptblox.com/search?q=${encodeURIComponent(query)}`)
+      );
+
+      await interaction.editReply({
+        content: `🔍 **${scripts.length} script(s) trouvé(s)** pour \`${query}\` sur ScriptBlox :`,
+        embeds,
+        components: [row],
+      });
+    } catch (e) {
+      await interaction.editReply({ content: `❌ Erreur lors de la recherche : ${e.message}` });
+    }
+    return;
   }
 
   if (cmd === 'aichat') {
@@ -1412,7 +1450,7 @@ client.on(Events.MessageCreate, async (message) => {
 
 // Retry toutes les 10 minutes pour déverrouiller les salons IA si quota restauré
 setInterval(async () => {
-  for (const [guildId, g] of Object.entries(db.peek() || {})) {
+  for (const [guildId, g] of Object.entries(db.peek())) {
     if (!g.aiChat?.channelId || !g.aiChat?.locked) continue;
     try {
       const guild = client.guilds.cache.get(guildId);
