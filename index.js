@@ -585,6 +585,40 @@ function buildHelpRow(selected) {
 async function routeSelect(interaction) {
   if (!interaction.guild) return;
 
+  if (interaction.customId.startsWith('findscript_pick_')) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const slug = interaction.values[0];
+    try {
+      // Récupère le script complet via l'API ScriptBlox (slug → détail)
+      const res = await fetch(`https://scriptblox.com/api/script/${slug}`, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+      if (!res.ok) throw new Error(`API: ${res.status}`);
+      const data = await res.json();
+      const s = data.result?.script || data.script || data;
+
+      // Construit le loadstring depuis rawScript (URL CDN) ou script (code brut)
+      let loadstring = null;
+      if (s.rawScript) {
+        loadstring = `loadstring(game:HttpGet("${s.rawScript}"))()`;
+      } else if (s.script) {
+        // Code brut — on le donne directement dans un bloc
+        const code = String(s.script).slice(0, 1900);
+        await interaction.editReply({ content: `\`\`\`lua\n${code}\n\`\`\`` });
+        return;
+      } else {
+        await interaction.editReply({ content: '❌ Impossible de récupérer ce script.' });
+        return;
+      }
+
+      const title = String(s.title || s.game?.name || 'Script').slice(0, 200);
+      await interaction.editReply({
+        content: `**${title}**\n\`\`\`lua\n${loadstring}\n\`\`\``,
+      });
+    } catch (e) {
+      await interaction.editReply({ content: `❌ Erreur : ${e.message}` });
+    }
+    return;
+  }
+
   if (interaction.customId === 'help_select') {
     const key = interaction.values[0];
     await interaction.update({ embeds: [buildHelpEmbed(key, interaction.guild)], components: [buildHelpRow(key)] });
@@ -1025,49 +1059,45 @@ async function handleModCommand(interaction, guild, g) {
     try {
       const url = `https://scriptblox.com/api/script/search?q=${encodeURIComponent(query)}&max=20`;
       const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-      if (!res.ok) throw new Error(`ScriptBlox API: ${res.status}`);
+      if (!res.ok) throw new Error(`API: ${res.status}`);
       const data = await res.json();
       let scripts = (data.result?.scripts || []);
       if (typeFilter === 'free') scripts = scripts.filter(s => s.scriptType !== 'paid');
       if (typeFilter === 'paid') scripts = scripts.filter(s => s.scriptType === 'paid');
-      scripts = scripts.slice(0, 5);
+      scripts = scripts.slice(0, 25);
 
       if (!scripts.length) {
         await interaction.editReply({ content: `❌ Aucun script trouvé pour **${query}**.` });
         return;
       }
 
-      const embeds = scripts.map((s, i) => {
-        const title = `${i + 1}. ${String(s.title || s.game?.name || 'Script').slice(0, 250)}`;
-        const gameName = String(s.game?.name || query || '?').slice(0, 1024);
-        const e = new EmbedBuilder()
-          .setColor(s.scriptType === 'paid' ? 0xFFD700 : 0x5865F2)
-          .setTitle(title)
-          .setURL(`https://scriptblox.com/script/${s.slug || s._id}`)
-          .addFields(
-            { name: '🎮 Jeu', value: gameName, inline: true },
-            { name: '💰 Type', value: s.scriptType === 'paid' ? '💎 Payant' : '🆓 Gratuit', inline: true },
-            { name: '👁️ Vues', value: String(s.views || 0), inline: true },
-          );
-        if (Array.isArray(s.features) && s.features.length) {
-          e.addFields({ name: '✨ Features', value: s.features.slice(0, 3).join(', ').slice(0, 1024), inline: false });
-        }
-        if (s.verified) e.setFooter({ text: '✅ Script vérifié' });
-        return e;
+      // Un embed compact récapitulatif — pas un embed par script
+      const lines = scripts.map((s, i) => {
+        const name = String(s.title || s.game?.name || 'Script').slice(0, 60);
+        const type = s.scriptType === 'paid' ? '💎' : '🆓';
+        const verified = s.verified ? ' ✅' : '';
+        return `\`${i + 1}.\` ${type} **${name}**${verified}`;
       });
 
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setLabel('🔍 Voir sur ScriptBlox')
-          .setStyle(ButtonStyle.Link)
-          .setURL(`https://scriptblox.com/search?q=${encodeURIComponent(query)}`)
-      );
+      const embed = new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle(`🔍 Scripts trouvés — ${query}`)
+        .setDescription(lines.join('\n'))
+        .setFooter({ text: `${scripts.length} résultat(s) · Sélectionne un script pour obtenir son loadstring` });
 
-      await interaction.editReply({
-        content: `🔍 **${scripts.length} script(s) trouvé(s)** pour \`${query}\` sur ScriptBlox :`,
-        embeds,
-        components: [row],
-      });
+      // Select menu : un choix par script, valeur = slug ou _id
+      const menu = new StringSelectMenuBuilder()
+        .setCustomId(`findscript_pick_${interaction.id}`)
+        .setPlaceholder('Choisir un script...')
+        .addOptions(scripts.map((s, i) => ({
+          label: `${i + 1}. ${String(s.title || s.game?.name || 'Script').slice(0, 95)}`,
+          description: `${s.scriptType === 'paid' ? '💎 Payant' : '🆓 Gratuit'}${s.verified ? ' · ✅ Vérifié' : ''} · ${s.views || 0} vues`.slice(0, 100),
+          value: String(s.slug || s._id).slice(0, 100),
+        })));
+
+      const row = new ActionRowBuilder().addComponents(menu);
+
+      await interaction.editReply({ embeds: [embed], components: [row] });
     } catch (e) {
       await interaction.editReply({ content: `❌ Erreur lors de la recherche : ${e.message}` });
     }
