@@ -173,11 +173,6 @@ async function handleCommand(interaction) {
       await db.save(guild.id);
       await syncPerms(guild);
       await reply(`✅ <@${user.id}> peut maintenant utiliser ${what}.`);
-      // MP au membre avec les instructions pour activer la commande dans Discord UI
-      if (_discordClient) {
-        const cmdNames = cmd ? [cmd] : commandNames;
-        await sendPermDM(_discordClient, user.id, guild.name, cmdNames);
-      }
       return;
     }
     const r = grantRemove(g.permUsers, user.id, cmd);
