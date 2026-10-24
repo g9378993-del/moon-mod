@@ -97,7 +97,6 @@ function buildPreviewEmbed(p, channelId) {
   }
 
   const cfg = [];
-  if (p.staffRoleId) cfg.push(`👮 Staff : <@&${p.staffRoleId}>`);
   if (p.logChannelId) cfg.push(`📋 Logs : <#${p.logChannelId}>`);
   if (p.categoryId) cfg.push(`📁 Catégorie : <#${p.categoryId}>`);
   if (cfg.length) embed.addFields({ name: 'Configuration', value: cfg.join('\n') });
@@ -136,7 +135,7 @@ function buildSetupMenu(p) {
   const row1 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('tsetup_edit_embed').setLabel('✏️ Modifier titre / description').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('tsetup_edit_color').setLabel('🎨 Couleur embed').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('tsetup_edit_config').setLabel('⚙️ Staff / Logs / Catégorie').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('tsetup_edit_config').setLabel('⚙️ Logs / Catégorie').setStyle(ButtonStyle.Secondary),
   );
   const row2 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('tsetup_add_btn').setLabel('➕ Ajouter un bouton').setStyle(ButtonStyle.Success),
@@ -228,19 +227,15 @@ async function handleSetupButton(interaction, client) {
   }
 
   if (id === 'tsetup_edit_config') {
-    const modal = new ModalBuilder().setCustomId('tsetup_modal_config').setTitle('Staff / Logs / Catégorie');
+    const modal = new ModalBuilder().setCustomId('tsetup_modal_config').setTitle('Logs / Catégorie');
     modal.addComponents(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId('staff').setLabel('ID rôle staff (optionnel)').setStyle(TextInputStyle.Short)
-          .setValue(p.staffRoleId || '').setRequired(false).setPlaceholder('ID du rôle staff')
-      ),
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId('logs').setLabel('ID salon logs (optionnel)').setStyle(TextInputStyle.Short)
           .setValue(p.logChannelId || '').setRequired(false).setPlaceholder('Laisse vide pour désactiver')
       ),
       new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId('category').setLabel('ID catégorie tickets (optionnel)').setStyle(TextInputStyle.Short)
-          .setValue(p.categoryId || '').setRequired(false).setPlaceholder('Laisse vide pour pas de catégorie')
+        new TextInputBuilder().setCustomId('category').setLabel('ID catégorie pour les tickets').setStyle(TextInputStyle.Short)
+          .setValue(p.categoryId || '').setRequired(false).setPlaceholder('ID de la catégorie Discord')
       ),
     );
     await interaction.showModal(modal);
@@ -363,15 +358,8 @@ async function handleSetupModal(interaction, client) {
   }
 
   if (id === 'tsetup_modal_config') {
-    const staff = interaction.fields.getTextInputValue('staff').trim();
     const logs = interaction.fields.getTextInputValue('logs').trim();
     const category = interaction.fields.getTextInputValue('category').trim();
-
-    if (staff) {
-      const r = guild.roles.cache.get(staff);
-      if (!r) { await refreshSetup(`❌ Rôle staff introuvable : \`${staff}\``); return; }
-      p.staffRoleId = staff;
-    } else { delete p.staffRoleId; }
 
     if (logs) {
       const lc = guild.channels.cache.get(logs);
