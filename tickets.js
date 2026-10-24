@@ -558,7 +558,7 @@ async function handleOpenButton(interaction, client) {
   }
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const channel = await createTicketChannel(guild, g, p, interaction.member, btnDef, {});
+  const channel = await createTicketChannel(guild, g, p, interaction.member, btnDef, {}, panelChannelId);
   if (!channel) { await interaction.editReply('❌ Impossible de créer le salon. Vérifie les permissions du bot.'); return; }
   await interaction.editReply(`✅ Ticket ouvert : <#${channel.id}>`);
 }
@@ -587,7 +587,7 @@ async function handleTicketModal(interaction, client) {
   const answers = {};
   (btnDef.questions || []).forEach((q, i) => { answers[q] = interaction.fields.getTextInputValue(`q${i}`); });
 
-  const channel = await createTicketChannel(guild, g, p, interaction.member, btnDef, answers);
+  const channel = await createTicketChannel(guild, g, p, interaction.member, btnDef, answers, panelChannelId);
   if (!channel) { await interaction.editReply('❌ Impossible de créer le salon.'); return; }
   await interaction.editReply(`✅ Ticket ouvert : <#${channel.id}>`);
 }
@@ -595,7 +595,7 @@ async function handleTicketModal(interaction, client) {
 // ----------------------------------------------------------------
 // CRÉER LE SALON TICKET
 // ----------------------------------------------------------------
-async function createTicketChannel(guild, g, p, member, btnDef, answers) {
+async function createTicketChannel(guild, g, p, member, btnDef, answers, panelChannelId) {
   ensureGlobal(g);
   g.ticketsCounter = (g.ticketsCounter || 0) + 1;
   const num = String(g.ticketsCounter).padStart(4, '0');
@@ -621,7 +621,7 @@ async function createTicketChannel(guild, g, p, member, btnDef, answers) {
     });
   } catch { return null; }
 
-  g.ticketsOpen[channel.id] = { userId: member.id, buttonId: btnDef.id, buttonLabel: btnDef.label, answers, openedAt: Date.now(), ticketNum: num };
+  g.ticketsOpen[channel.id] = { userId: member.id, panelChannelId: panelChannelId || null, buttonId: btnDef.id, buttonLabel: btnDef.label, answers, openedAt: Date.now(), ticketNum: num };
   await db.save(guild.id);
 
   // Embed: utilise les overrides du bouton si définis, sinon valeurs par défaut
@@ -647,7 +647,7 @@ async function createTicketChannel(guild, g, p, member, btnDef, answers) {
       new ButtonBuilder()
         .setCustomId(`ticket_accept_${channel.id}`)
         .setEmoji('✅')
-        .setStyle(ButtonStyle.Success)
+        .setStyle(ButtonStyle.Success)   // vert
     );
   }
   if (ar.refuseEnabled) {
@@ -655,7 +655,7 @@ async function createTicketChannel(guild, g, p, member, btnDef, answers) {
       new ButtonBuilder()
         .setCustomId(`ticket_refuse_${channel.id}`)
         .setEmoji('❌')
-        .setStyle(ButtonStyle.Danger)
+        .setStyle(ButtonStyle.Secondary) // noir/gris foncé
     );
   }
 
