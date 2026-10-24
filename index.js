@@ -15,6 +15,7 @@ const perms = require('./perms');
 const constructionCmds = require('./construction_commands');
 const trade = require('./trade');
 const bf = require('./brainrot-finder');
+const tickets = require('./tickets');
 const {
   Client, GatewayIntentBits, Partials, Events, PermissionFlagsBits, ChannelType,
   EmbedBuilder, REST, Routes, SlashCommandBuilder, AttachmentBuilder,
@@ -467,7 +468,7 @@ const commands = [
   return c.toJSON();
 });
 
-commands.push(...economy.commands, ...perms.commands, ...constructionCmds.commands, ...trade.commands, ...bf.commands);
+commands.push(...economy.commands, ...perms.commands, ...constructionCmds.commands, ...trade.commands, ...bf.commands, ...tickets.commands);
 perms.setCommandNames(commands.map((c) => c.name));
 // Injecté après déclaration de syncCommandPerms (plus bas) — voir la ligne setSyncFn.
 
@@ -621,6 +622,11 @@ function buildHelpRow(selected) {
 }
 async function routeSelect(interaction) {
   if (!interaction.guild) return;
+
+  // ---- Tickets ----
+  if (interaction.customId.startsWith('ticket_open_')) { await tickets.handleOpenButton(interaction, client); return; }
+  if (interaction.customId.startsWith('ticket_close_')) { await tickets.handleCloseButton(interaction, client); return; }
+  if (interaction.customId.startsWith('tsetup_')) { await tickets.handleSetupButton(interaction, client); return; }
 
   if (interaction.customId.startsWith('findscript_pick_')) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -1414,6 +1420,11 @@ async function routeInteraction(interaction) {
     return;
   }
 
+  if (tickets.isTicketCommand(interaction.commandName)) {
+    await tickets.handleCommand(interaction, client);
+    return;
+  }
+
   if (interaction.commandName === 'findscriptchannel') {
     if (!perms.hasBase(interaction.member, g)) {
       await interaction.reply({ flags: MessageFlags.Ephemeral, content: '❌ Seuls les Administrateurs / Gérer le serveur peuvent configurer ce salon.' });
@@ -1469,6 +1480,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.customId && interaction.customId.startsWith('eco:')) { await economy.handleComponent(interaction); return; }
     if (interaction.customId && interaction.customId.startsWith('trade:')) { await trade.handleComponent(interaction); return; }
     if (interaction.customId && interaction.customId.startsWith('bf:')) { await bf.handleComponent(interaction); return; }
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('ticket_modal_')) { await tickets.handleTicketModal(interaction, client); return; }
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('tsetup_modal_')) { await tickets.handleSetupModal(interaction, client); return; }
     if (interaction.isStringSelectMenu() || interaction.isButton()) { await routeSelect(interaction); return; }
     await routeInteraction(interaction);
   } catch (err) {
