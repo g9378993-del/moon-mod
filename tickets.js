@@ -334,14 +334,15 @@ async function handleSetupModal(interaction, client) {
   // Ça remplace l'ancien menu setup par la version fraîche sans conflit.
 
   async function refreshSetup(errorMsg) {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    if (errorMsg) {
-      await interaction.editReply({ content: errorMsg, embeds: [], components: [] });
-      return;
-    }
+    // Les interactions modales n'acceptent pas deferReply — elles acceptent
+    // reply() directement. On répond avec le menu mis à jour en éphémère.
     const embed = buildPreviewEmbed(g);
     const rows = buildSetupMenu(g);
-    await interaction.editReply({ embeds: [embed], components: rows });
+    if (errorMsg) {
+      await interaction.reply({ flags: MessageFlags.Ephemeral, content: errorMsg, embeds: [], components: [] });
+      return;
+    }
+    await interaction.reply({ flags: MessageFlags.Ephemeral, embeds: [embed], components: rows });
   }
 
   // ---- Embed titre/desc ----
