@@ -243,7 +243,7 @@ async function handleSetupButton(interaction, client) {
           .setRequired(false).setMaxLength(50)
       ),
       new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId('btn_style').setLabel('Style : PRIMARY / SECONDARY / SUCCESS / DANGER').setStyle(TextInputStyle.Short)
+        new TextInputBuilder().setCustomId('btn_style').setLabel('Style (PRIMARY, SUCCESS, DANGER...)').setStyle(TextInputStyle.Short)
           .setValue('PRIMARY').setRequired(false).setMaxLength(10)
       ),
       new ActionRowBuilder().addComponents(
