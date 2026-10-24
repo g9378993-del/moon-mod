@@ -235,20 +235,20 @@ async function handleSetupButton(interaction, client) {
     const modal = new ModalBuilder().setCustomId('tsetup_modal_addbtn').setTitle('Ajouter un bouton');
     modal.addComponents(
       new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId('label').setLabel('Nom du bouton (ex: Support)').setStyle(TextInputStyle.Short)
+        new TextInputBuilder().setCustomId('btn_label').setLabel('Nom du bouton (ex: Support)').setStyle(TextInputStyle.Short)
           .setRequired(true).setMaxLength(80)
       ),
       new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId('emoji').setLabel('Emoji (ex: 🎫 — optionnel)').setStyle(TextInputStyle.Short)
+        new TextInputBuilder().setCustomId('btn_emoji').setLabel('Emoji (ex: 🎫 — optionnel)').setStyle(TextInputStyle.Short)
           .setRequired(false).setMaxLength(50)
       ),
       new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId('style').setLabel('Style : PRIMARY / SECONDARY / SUCCESS / DANGER').setStyle(TextInputStyle.Short)
+        new TextInputBuilder().setCustomId('btn_style').setLabel('Style : PRIMARY / SECONDARY / SUCCESS / DANGER').setStyle(TextInputStyle.Short)
           .setValue('PRIMARY').setRequired(false).setMaxLength(10)
       ),
       new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId('questions').setLabel('Questions séparées par | (optionnel)').setStyle(TextInputStyle.Paragraph)
-          .setRequired(false).setMaxLength(500).setPlaceholder('Ton pseudo|Ton problème|Depuis quand?')
+        new TextInputBuilder().setCustomId('btn_questions').setLabel('Questions séparées par ; (optionnel)').setStyle(TextInputStyle.Paragraph)
+          .setRequired(false).setMaxLength(500).setPlaceholder('Ton pseudo;Ton problème;Depuis quand?')
       ),
     );
     await interaction.showModal(modal);
@@ -382,14 +382,14 @@ async function handleSetupModal(interaction, client) {
 
   // ---- Ajouter bouton ----
   if (id === 'tsetup_modal_addbtn') {
-    const label = interaction.fields.getTextInputValue('label').trim();
-    const emoji = interaction.fields.getTextInputValue('emoji').trim() || null;
-    const styleRaw = interaction.fields.getTextInputValue('style').trim().toUpperCase();
-    const questionsRaw = interaction.fields.getTextInputValue('questions').trim();
+    const label = interaction.fields.getTextInputValue('btn_label').trim();
+    const emoji = interaction.fields.getTextInputValue('btn_emoji').trim() || null;
+    const styleRaw = interaction.fields.getTextInputValue('btn_style').trim().toUpperCase();
+    const questionsRaw = interaction.fields.getTextInputValue('btn_questions').trim();
 
     const validStyles = ['PRIMARY', 'SECONDARY', 'SUCCESS', 'DANGER'];
     const style = validStyles.includes(styleRaw) ? styleRaw : 'PRIMARY';
-    const questions = questionsRaw ? questionsRaw.split('|').map((q) => q.trim()).filter(Boolean).slice(0, 5) : [];
+    const questions = questionsRaw ? questionsRaw.split(';').map((q) => q.trim()).filter(Boolean).slice(0, 5) : [];
     const btnId = `btn_${Date.now().toString(36)}`;
 
     g.tickets.buttons.push({ id: btnId, label, emoji, style, questions });
