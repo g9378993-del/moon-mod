@@ -326,15 +326,30 @@ async function handleSetupModal(interaction, client) {
   ensureTickets(g);
   const id = interaction.customId;
 
-  // Après un modal, on doit utiliser reply() — pas deferReply()
-  // sendSetupMessage sera appelé en mode 'reply'
+  // Après un modal Discord, reply() crée un NOUVEAU message éphémère — ça ne met
+  // pas à jour le menu setup existant et peut déclencher une erreur si Discord
+  // considère l'interaction déjà répondue. Le pattern correct :
+  //   1. deferReply({ flags: Ephemeral })  — accuse réception du modal
+  //   2. editReply(...)                    — envoie le menu mis à jour dans ce même message
+  // Ça remplace l'ancien menu setup par la version fraîche sans conflit.
+
+  async function refreshSetup(errorMsg) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (errorMsg) {
+      await interaction.editReply({ content: errorMsg, embeds: [], components: [] });
+      return;
+    }
+    const embed = buildPreviewEmbed(g);
+    const rows = buildSetupMenu(g);
+    await interaction.editReply({ embeds: [embed], components: rows });
+  }
 
   // ---- Embed titre/desc ----
   if (id === 'tsetup_modal_embed') {
     g.tickets.title = interaction.fields.getTextInputValue('title');
     g.tickets.description = interaction.fields.getTextInputValue('desc');
     await db.save(guild.id);
-    await sendSetupMessage(interaction, g, 'reply');
+    await refreshSetup();
     return;
   }
 
@@ -342,12 +357,12 @@ async function handleSetupModal(interaction, client) {
   if (id === 'tsetup_modal_color') {
     const c = interaction.fields.getTextInputValue('color').trim();
     if (!/^#?[0-9a-fA-F]{6}$/.test(c)) {
-      await interaction.reply({ flags: MessageFlags.Ephemeral, content: '❌ Couleur invalide. Format attendu : `#FF5500`' });
+      await refreshSetup('❌ Couleur invalide. Format attendu : `#FF5500`');
       return;
     }
     g.tickets.color = c.startsWith('#') ? c : `#${c}`;
     await db.save(guild.id);
-    await sendSetupMessage(interaction, g, 'reply');
+    await refreshSetup();
     return;
   }
 
@@ -356,11 +371,11 @@ async function handleSetupModal(interaction, client) {
     const logs = interaction.fields.getTextInputValue('logs').trim();
     if (logs) {
       const logCh = guild.channels.cache.get(logs);
-      if (!logCh) { await interaction.reply({ flags: MessageFlags.Ephemeral, content: `❌ Salon logs introuvable : \`${logs}\`.` }); return; }
+      if (!logCh) { await refreshSetup(`❌ Salon logs introuvable : \`${logs}\`.`); return; }
       g.tickets.logChannelId = logs;
     } else { delete g.tickets.logChannelId; }
     await db.save(guild.id);
-    await sendSetupMessage(interaction, g, 'reply');
+    await refreshSetup();
     return;
   }
 
@@ -378,7 +393,7 @@ async function handleSetupModal(interaction, client) {
 
     g.tickets.buttons.push({ id: btnId, label, emoji, style, questions });
     await db.save(guild.id);
-    await sendSetupMessage(interaction, g, 'reply');
+    await refreshSetup();
     return;
   }
 
@@ -388,11 +403,11 @@ async function handleSetupModal(interaction, client) {
     const before = g.tickets.buttons.length;
     g.tickets.buttons = g.tickets.buttons.filter((b) => b.label.toLowerCase() !== nom);
     if (g.tickets.buttons.length === before) {
-      await interaction.reply({ flags: MessageFlags.Ephemeral, content: `❌ Bouton \`${nom}\` introuvable.` });
+      await refreshSetup(`❌ Bouton \`${nom}\` introuvable.`);
       return;
     }
     await db.save(guild.id);
-    await sendSetupMessage(interaction, g, 'reply');
+    await refreshSetup();
     return;
   }
 }
