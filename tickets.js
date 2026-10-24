@@ -807,15 +807,6 @@ async function handleAcceptButton(interaction, client) {
     } catch {}
   }
 
-  // Fermer le ticket après délai
-  if (ch) {
-    await ch.send('✅ This ticket will be closed in 5 seconds...');
-    await new Promise((r) => setTimeout(r, 5000));
-    try { await ch.delete('Application accepted'); } catch {}
-  }
-
-  delete g.ticketsOpen[channelId];
-  await db.save(guild.id);
   try { await interaction.editReply('✅ Application accepted.'); } catch {}
 }
 
@@ -883,15 +874,6 @@ async function handleRefuseButton(interaction, client) {
     } catch {}
   }
 
-  // Fermer
-  if (ch) {
-    await ch.send('❌ This ticket will be closed in 5 seconds...');
-    await new Promise((r) => setTimeout(r, 5000));
-    try { await ch.delete('Application declined'); } catch {}
-  }
-
-  delete g.ticketsOpen[channelId];
-  await db.save(guild.id);
   try { await interaction.editReply('✅ Application declined.'); } catch {}
 }
 
