@@ -626,6 +626,8 @@ async function routeSelect(interaction) {
   // ---- Tickets ----
   if (interaction.customId.startsWith('ticket_open_')) { await tickets.handleOpenButton(interaction, client); return; }
   if (interaction.customId.startsWith('ticket_close_')) { await tickets.handleCloseButton(interaction, client); return; }
+  if (interaction.customId.startsWith('ticket_accept_')) { await tickets.handleAcceptButton(interaction, client); return; }
+  if (interaction.customId.startsWith('ticket_refuse_')) { await tickets.handleRefuseButton(interaction, client); return; }
   if (interaction.customId.startsWith('tsetup_')) { await tickets.handleSetupButton(interaction, client); return; }
 
   if (interaction.customId.startsWith('findscript_pick_')) {

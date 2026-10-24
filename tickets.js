@@ -144,12 +144,19 @@ function buildSetupMenu(p) {
     new ButtonBuilder().setCustomId('tsetup_list_btns').setLabel('📋 Voir les boutons').setStyle(ButtonStyle.Secondary)
       .setDisabled(!p.buttons.length),
   );
+  // Configurer les boutons accept/refuse sur un type de ticket
   const row3 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('tsetup_edit_ticket_embed').setLabel('📝 Modifier l\'embed du ticket').setStyle(ButtonStyle.Secondary)
+      .setDisabled(!p.buttons.length),
+    new ButtonBuilder().setCustomId('tsetup_config_accept_refuse').setLabel('✅❌ Config Accepter / Refuser').setStyle(ButtonStyle.Secondary)
+      .setDisabled(!p.buttons.length),
+  );
+  const row4 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('tsetup_post').setLabel('📢 Poster l\'embed').setStyle(ButtonStyle.Primary)
       .setDisabled(!p.buttons.length),
     new ButtonBuilder().setCustomId('tsetup_close').setLabel('✅ Terminer').setStyle(ButtonStyle.Secondary),
   );
-  return [row1, row2, row3];
+  return [row1, row2, row3, row4];
 }
 
 // ----------------------------------------------------------------
@@ -315,6 +322,51 @@ async function handleSetupButton(interaction, client) {
     return;
   }
 
+  if (id === 'tsetup_edit_ticket_embed') {
+    // Choisir quel bouton éditer (par nom)
+    const modal = new ModalBuilder().setCustomId('tsetup_modal_ticket_embed').setTitle('Modifier l\'embed d\'ouverture');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId('btn_target').setLabel('Nom exact du bouton ciblé').setStyle(TextInputStyle.Short)
+          .setRequired(true).setMaxLength(80).setPlaceholder(p.buttons[0]?.label || 'Staff Application')
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId('embed_title').setLabel('Titre de l\'embed (optionnel)').setStyle(TextInputStyle.Short)
+          .setRequired(false).setMaxLength(100).setPlaceholder('Laisse vide pour garder le titre par défaut')
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId('embed_desc').setLabel('Description de l\'embed (optionnel)').setStyle(TextInputStyle.Paragraph)
+          .setRequired(false).setMaxLength(2000).setPlaceholder('Laisse vide pour garder la description par défaut')
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId('embed_color').setLabel('Couleur hex (optionnel, ex: #FF5500)').setStyle(TextInputStyle.Short)
+          .setRequired(false).setMaxLength(7).setPlaceholder('Laisse vide pour la couleur du panel')
+      ),
+    );
+    await interaction.showModal(modal);
+    return;
+  }
+
+  if (id === 'tsetup_config_accept_refuse') {
+    const modal = new ModalBuilder().setCustomId('tsetup_modal_accept_refuse').setTitle('Configurer Accepter / Refuser');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId('btn_target').setLabel('Nom exact du bouton ciblé').setStyle(TextInputStyle.Short)
+          .setRequired(true).setMaxLength(80).setPlaceholder(p.buttons[0]?.label || 'Staff Application')
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId('accept_role_id').setLabel('ID du rôle à donner si accepté').setStyle(TextInputStyle.Short)
+          .setRequired(false).setMaxLength(25).setPlaceholder('Laisse vide pour désactiver l\'acceptation')
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId('refuse_enabled').setLabel('Activer le bouton Refuser ? (oui/non)').setStyle(TextInputStyle.Short)
+          .setRequired(true).setMaxLength(3).setValue('oui')
+      ),
+    );
+    await interaction.showModal(modal);
+    return;
+  }
+
   if (id === 'tsetup_close') {
     await interaction.update({ content: '✅ Configuration terminée.', embeds: [], components: [] });
     return;
@@ -403,6 +455,59 @@ async function handleSetupModal(interaction, client) {
     if (p.buttons.length === before) { await refreshSetup(`❌ Bouton \`${nom}\` introuvable.`); return; }
     await db.save(guild.id);
     await refreshSetup();
+    return;
+  }
+
+  // ---- Modifier l'embed d'ouverture d'un bouton spécifique ----
+  if (id === 'tsetup_modal_ticket_embed') {
+    const target = interaction.fields.getTextInputValue('btn_target').trim();
+    const btn = p.buttons.find((b) => b.label.toLowerCase() === target.toLowerCase());
+    if (!btn) { await refreshSetup(`❌ Bouton \`${target}\` introuvable.`); return; }
+
+    const newTitle = interaction.fields.getTextInputValue('embed_title').trim();
+    const newDesc  = interaction.fields.getTextInputValue('embed_desc').trim();
+    const newColor = interaction.fields.getTextInputValue('embed_color').trim();
+
+    if (!btn.ticketEmbed) btn.ticketEmbed = {};
+    if (newTitle) btn.ticketEmbed.title = newTitle;
+    if (newDesc)  btn.ticketEmbed.description = newDesc;
+    if (newColor && /^#?[0-9a-fA-F]{6}$/.test(newColor)) {
+      btn.ticketEmbed.color = newColor.startsWith('#') ? newColor : `#${newColor}`;
+    }
+
+    await db.save(guild.id);
+    await refreshSetup(`✅ Embed du ticket **${btn.label}** mis à jour.`);
+    return;
+  }
+
+  // ---- Configurer accept/refuse pour un bouton ----
+  if (id === 'tsetup_modal_accept_refuse') {
+    const target = interaction.fields.getTextInputValue('btn_target').trim();
+    const btn = p.buttons.find((b) => b.label.toLowerCase() === target.toLowerCase());
+    if (!btn) { await refreshSetup(`❌ Bouton \`${target}\` introuvable.`); return; }
+
+    const roleId = interaction.fields.getTextInputValue('accept_role_id').trim();
+    const refuseRaw = interaction.fields.getTextInputValue('refuse_enabled').trim().toLowerCase();
+    const refuseEnabled = refuseRaw === 'oui' || refuseRaw === 'yes' || refuseRaw === '1';
+
+    if (!btn.acceptRefuse) btn.acceptRefuse = {};
+
+    if (roleId) {
+      const role = guild.roles.cache.get(roleId);
+      if (!role) { await refreshSetup(`❌ Rôle introuvable : \`${roleId}\``); return; }
+      btn.acceptRefuse.roleId = roleId;
+      btn.acceptRefuse.acceptEnabled = true;
+    } else {
+      btn.acceptRefuse.acceptEnabled = false;
+      delete btn.acceptRefuse.roleId;
+    }
+
+    btn.acceptRefuse.refuseEnabled = refuseEnabled;
+
+    await db.save(guild.id);
+    const acceptStr = btn.acceptRefuse.acceptEnabled ? `✅ Accepter → rôle <@&${btn.acceptRefuse.roleId}>` : '✅ Accepter désactivé';
+    const refuseStr = refuseEnabled ? '❌ Refuser activé' : '❌ Refuser désactivé';
+    await refreshSetup(`✅ Bouton **${btn.label}** configuré :\n${acceptStr}\n${refuseStr}`);
     return;
   }
 }
@@ -519,19 +624,42 @@ async function createTicketChannel(guild, g, p, member, btnDef, answers) {
   g.ticketsOpen[channel.id] = { userId: member.id, buttonId: btnDef.id, buttonLabel: btnDef.label, answers, openedAt: Date.now(), ticketNum: num };
   await db.save(guild.id);
 
+  // Embed: utilise les overrides du bouton si définis, sinon valeurs par défaut
+  const te = btnDef.ticketEmbed || {};
   const embed = new EmbedBuilder()
-    .setTitle(`🎫 Ticket #${num} — ${btnDef.label}`)
-    .setColor(hexToInt(p.color))
-    .setDescription(`Ticket ouvert par <@${member.id}>`)
+    .setTitle(te.title || `🎫 Ticket #${num} — ${btnDef.label}`)
+    .setColor(hexToInt(te.color || p.color))
+    .setDescription((te.description ? `${te.description}\n\n` : '') + `Ticket ouvert par <@${member.id}>`)
     .setTimestamp();
 
   if (Object.keys(answers).length) {
     embed.addFields(Object.entries(answers).map(([q, a]) => ({ name: `❓ ${q}`, value: a || '*(vide)*', inline: false })));
   }
 
-  const closeRow = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`ticket_close_${channel.id}`).setLabel('🔒 Fermer le ticket').setStyle(ButtonStyle.Danger)
-  );
+  // Construire la rangée de boutons d'action
+  const actionButtons = [
+    new ButtonBuilder().setCustomId(`ticket_close_${channel.id}`).setLabel('🔒 Fermer le ticket').setStyle(ButtonStyle.Danger),
+  ];
+
+  const ar = btnDef.acceptRefuse || {};
+  if (ar.acceptEnabled && ar.roleId) {
+    actionButtons.push(
+      new ButtonBuilder()
+        .setCustomId(`ticket_accept_${channel.id}`)
+        .setEmoji('✅')
+        .setStyle(ButtonStyle.Success)
+    );
+  }
+  if (ar.refuseEnabled) {
+    actionButtons.push(
+      new ButtonBuilder()
+        .setCustomId(`ticket_refuse_${channel.id}`)
+        .setEmoji('❌')
+        .setStyle(ButtonStyle.Danger)
+    );
+  }
+
+  const closeRow = new ActionRowBuilder().addComponents(...actionButtons);
 
   const staffMention = p.staffRoleId ? `<@&${p.staffRoleId}>` : '';
   await channel.send({ content: `${member} ${staffMention}`.trim(), embeds: [embed], components: [closeRow] });
@@ -602,6 +730,172 @@ async function handleCloseButton(interaction, client) {
 }
 
 // ----------------------------------------------------------------
+// HANDLER ACCEPTER TICKET ✅
+// ----------------------------------------------------------------
+async function handleAcceptButton(interaction, client) {
+  const guild = interaction.guild;
+  const g = db.get(guild.id);
+  ensureGlobal(g);
+
+  const channelId = interaction.customId.replace('ticket_accept_', '');
+  const ticketData = g.ticketsOpen[channelId];
+  if (!ticketData) {
+    await interaction.reply({ flags: MessageFlags.Ephemeral, content: '❌ Ticket introuvable en base.' });
+    return;
+  }
+
+  // Retrouver le panel et la définition du bouton
+  let p = null, btnDef = null;
+  for (const [, panel] of Object.entries(g.ticketPanels || {})) {
+    const found = panel.buttons?.find((b) => b.id === ticketData.buttonId);
+    if (found) { p = panel; btnDef = found; break; }
+  }
+
+  // Vérif staff
+  const isStaff = interaction.member.permissions.has(PermissionFlagsBits.ManageChannels) ||
+    (p?.staffRoleId && interaction.member.roles.cache.has(p.staffRoleId));
+  if (!isStaff) {
+    await interaction.reply({ flags: MessageFlags.Ephemeral, content: '❌ Only staff can accept applications.' });
+    return;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const roleId = btnDef?.acceptRefuse?.roleId;
+  let roleMention = '';
+  if (roleId) {
+    try {
+      const member = await guild.members.fetch(ticketData.userId);
+      await member.roles.add(roleId, `Accepted by ${interaction.user.tag}`);
+      roleMention = `<@&${roleId}>`;
+    } catch (e) {
+      await interaction.editReply(`❌ Could not assign role: ${e.message}`);
+      return;
+    }
+  }
+
+  // Message dans le ticket avant fermeture
+  const ch = guild.channels.cache.get(channelId);
+  if (ch) {
+    const acceptEmbed = new EmbedBuilder()
+      .setTitle('✅ Application Accepted')
+      .setColor(0x57b85a)
+      .setDescription(`<@${ticketData.userId}> your application has been **accepted**!${roleMention ? `\nYou have been given the role ${roleMention}.` : ''}`)
+      .setFooter({ text: `Accepted by ${interaction.user.tag}` })
+      .setTimestamp();
+    await ch.send({ embeds: [acceptEmbed] });
+  }
+
+  // Log
+  if (p?.logChannelId) {
+    try {
+      const logChannel = guild.channels.cache.get(p.logChannelId);
+      if (logChannel) {
+        const logEmbed = new EmbedBuilder()
+          .setTitle(`✅ Application Accepted — #${ticketData.ticketNum || '?'} ${ticketData.buttonLabel || ''}`)
+          .setColor(0x57b85a)
+          .addFields(
+            { name: 'Applicant', value: `<@${ticketData.userId}>`, inline: true },
+            { name: 'Accepted by', value: `<@${interaction.user.id}>`, inline: true },
+            { name: 'Role given', value: roleMention || '*(none)*', inline: true },
+          ).setTimestamp();
+        if (ticketData.answers && Object.keys(ticketData.answers).length) {
+          logEmbed.addFields(Object.entries(ticketData.answers).map(([q, a]) => ({ name: `❓ ${q}`, value: a || '*(vide)*', inline: false })));
+        }
+        await logChannel.send({ embeds: [logEmbed] });
+      }
+    } catch {}
+  }
+
+  // Fermer le ticket après délai
+  if (ch) {
+    await ch.send('✅ This ticket will be closed in 5 seconds...');
+    await new Promise((r) => setTimeout(r, 5000));
+    try { await ch.delete('Application accepted'); } catch {}
+  }
+
+  delete g.ticketsOpen[channelId];
+  await db.save(guild.id);
+  try { await interaction.editReply('✅ Application accepted.'); } catch {}
+}
+
+// ----------------------------------------------------------------
+// HANDLER REFUSER TICKET ❌
+// ----------------------------------------------------------------
+async function handleRefuseButton(interaction, client) {
+  const guild = interaction.guild;
+  const g = db.get(guild.id);
+  ensureGlobal(g);
+
+  const channelId = interaction.customId.replace('ticket_refuse_', '');
+  const ticketData = g.ticketsOpen[channelId];
+  if (!ticketData) {
+    await interaction.reply({ flags: MessageFlags.Ephemeral, content: '❌ Ticket introuvable en base.' });
+    return;
+  }
+
+  // Retrouver le panel
+  let p = null;
+  for (const [, panel] of Object.entries(g.ticketPanels || {})) {
+    const found = panel.buttons?.find((b) => b.id === ticketData.buttonId);
+    if (found) { p = panel; break; }
+  }
+
+  // Vérif staff
+  const isStaff = interaction.member.permissions.has(PermissionFlagsBits.ManageChannels) ||
+    (p?.staffRoleId && interaction.member.roles.cache.has(p.staffRoleId));
+  if (!isStaff) {
+    await interaction.reply({ flags: MessageFlags.Ephemeral, content: '❌ Only staff can refuse applications.' });
+    return;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  // Message dans le ticket
+  const ch = guild.channels.cache.get(channelId);
+  if (ch) {
+    const refuseEmbed = new EmbedBuilder()
+      .setTitle('❌ Application Declined')
+      .setColor(0xed4245)
+      .setDescription(`<@${ticketData.userId}> your application has been **declined**.\nThank you for applying. You may apply again in the future.`)
+      .setFooter({ text: `Declined by ${interaction.user.tag}` })
+      .setTimestamp();
+    await ch.send({ embeds: [refuseEmbed] });
+  }
+
+  // Log
+  if (p?.logChannelId) {
+    try {
+      const logChannel = guild.channels.cache.get(p.logChannelId);
+      if (logChannel) {
+        const logEmbed = new EmbedBuilder()
+          .setTitle(`❌ Application Declined — #${ticketData.ticketNum || '?'} ${ticketData.buttonLabel || ''}`)
+          .setColor(0xed4245)
+          .addFields(
+            { name: 'Applicant', value: `<@${ticketData.userId}>`, inline: true },
+            { name: 'Declined by', value: `<@${interaction.user.id}>`, inline: true },
+          ).setTimestamp();
+        if (ticketData.answers && Object.keys(ticketData.answers).length) {
+          logEmbed.addFields(Object.entries(ticketData.answers).map(([q, a]) => ({ name: `❓ ${q}`, value: a || '*(vide)*', inline: false })));
+        }
+        await logChannel.send({ embeds: [logEmbed] });
+      }
+    } catch {}
+  }
+
+  // Fermer
+  if (ch) {
+    await ch.send('❌ This ticket will be closed in 5 seconds...');
+    await new Promise((r) => setTimeout(r, 5000));
+    try { await ch.delete('Application declined'); } catch {}
+  }
+
+  delete g.ticketsOpen[channelId];
+  await db.save(guild.id);
+  try { await interaction.editReply('✅ Application declined.'); } catch {}
+}
+
+// ----------------------------------------------------------------
 // EXPORTS
 // ----------------------------------------------------------------
-module.exports = { commands, isTicketCommand, handleCommand, handleSetupButton, handleSetupModal, handleOpenButton, handleCloseButton, handleTicketModal };
+module.exports = { commands, isTicketCommand, handleCommand, handleSetupButton, handleSetupModal, handleOpenButton, handleCloseButton, handleTicketModal, handleAcceptButton, handleRefuseButton };
