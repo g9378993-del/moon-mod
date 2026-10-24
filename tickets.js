@@ -137,12 +137,14 @@ function buildSetupMenu(g) {
 }
 
 // Envoie / met à jour le message de setup (ephemeral)
-async function sendSetupMessage(interaction, g, edit = false) {
+// mode: 'editReply' (après deferReply), 'reply' (première réponse), 'update' (bouton)
+async function sendSetupMessage(interaction, g, mode = 'editReply') {
   const embed = buildPreviewEmbed(g);
   const rows = buildSetupMenu(g);
-  const payload = { embeds: [embed], components: rows };
-  if (edit) await interaction.editReply(payload).catch(() => interaction.update(payload));
-  else await interaction.editReply(payload);
+  const payload = { embeds: [embed], components: rows, flags: MessageFlags.Ephemeral };
+  if (mode === 'editReply') await interaction.editReply(payload);
+  else if (mode === 'update') await interaction.update(payload);
+  else await interaction.reply(payload);
 }
 
 // ----------------------------------------------------------------
@@ -269,19 +271,15 @@ async function handleSetupButton(interaction, client) {
 
   // ---- Supprimer un bouton ----
   if (id === 'tsetup_remove_btn') {
+    // Affiche la liste puis ouvre un modal
     const modal = new ModalBuilder().setCustomId('tsetup_modal_removebtn').setTitle('Supprimer un bouton');
-    const list = g.tickets.buttons.map((b, i) => `${i + 1}. ${b.emoji || ''} ${b.label}`).join('\n');
     modal.addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId('nom').setLabel('Nom exact du bouton à supprimer').setStyle(TextInputStyle.Short)
           .setRequired(true).setMaxLength(80).setPlaceholder(g.tickets.buttons[0]?.label || 'Nom du bouton')
       ),
     );
-    // On ne peut pas afficher la liste dans le modal — on répond d'abord avec la liste
-    await interaction.reply({
-      flags: MessageFlags.Ephemeral,
-      content: `**Boutons existants :**\n${list}\n\nUtilise le bouton ➖ Supprimer à nouveau — un formulaire va apparaître.`,
-    });
+    await interaction.showModal(modal);
     return;
   }
 
@@ -291,7 +289,9 @@ async function handleSetupButton(interaction, client) {
       const qs = b.questions?.length ? b.questions.map((q) => `\n    ❓ ${q}`).join('') : ' *(aucune question)*';
       return `**${i + 1}.** ${b.emoji || ''} ${b.label}${qs}`;
     });
-    await interaction.reply({ flags: MessageFlags.Ephemeral, content: lines.join('\n\n') || 'Aucun bouton.' });
+    // deferUpdate pour pas toucher le menu principal, puis followUp éphémère
+    await interaction.deferUpdate();
+    await interaction.followUp({ flags: MessageFlags.Ephemeral, content: lines.join('\n\n') || 'Aucun bouton.' });
     return;
   }
 
@@ -339,14 +339,15 @@ async function handleSetupModal(interaction, client) {
   ensureTickets(g);
   const id = interaction.customId;
 
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  // Après un modal, on doit utiliser reply() — pas deferReply()
+  // sendSetupMessage sera appelé en mode 'reply'
 
   // ---- Embed titre/desc ----
   if (id === 'tsetup_modal_embed') {
     g.tickets.title = interaction.fields.getTextInputValue('title');
     g.tickets.description = interaction.fields.getTextInputValue('desc');
     await db.save(guild.id);
-    await sendSetupMessage(interaction, g);
+    await sendSetupMessage(interaction, g, 'reply');
     return;
   }
 
@@ -354,12 +355,12 @@ async function handleSetupModal(interaction, client) {
   if (id === 'tsetup_modal_color') {
     const c = interaction.fields.getTextInputValue('color').trim();
     if (!/^#?[0-9a-fA-F]{6}$/.test(c)) {
-      await interaction.editReply('❌ Couleur invalide. Format attendu : `#FF5500`');
+      await interaction.reply({ flags: MessageFlags.Ephemeral, content: '❌ Couleur invalide. Format attendu : `#FF5500`' });
       return;
     }
     g.tickets.color = c.startsWith('#') ? c : `#${c}`;
     await db.save(guild.id);
-    await sendSetupMessage(interaction, g);
+    await sendSetupMessage(interaction, g, 'reply');
     return;
   }
 
@@ -370,28 +371,26 @@ async function handleSetupModal(interaction, client) {
     const category = interaction.fields.getTextInputValue('category').trim();
     const logs = interaction.fields.getTextInputValue('logs').trim();
 
-    // Validation staff role
     const staffRole = guild.roles.cache.get(staff);
-    if (!staffRole) { await interaction.editReply(`❌ Rôle introuvable : \`${staff}\`. Copie l'ID via clic droit sur le rôle.`); return; }
-    // Validation salon
+    if (!staffRole) { await interaction.reply({ flags: MessageFlags.Ephemeral, content: `❌ Rôle introuvable : \`${staff}\`. Copie l'ID via clic droit sur le rôle.` }); return; }
     const embedCh = guild.channels.cache.get(channel);
-    if (!embedCh) { await interaction.editReply(`❌ Salon introuvable : \`${channel}\`. Copie l'ID via clic droit sur le salon.`); return; }
+    if (!embedCh) { await interaction.reply({ flags: MessageFlags.Ephemeral, content: `❌ Salon introuvable : \`${channel}\`. Copie l'ID via clic droit sur le salon.` }); return; }
 
     g.tickets.staffRoleId = staff;
     g.tickets.embedChannelId = channel;
     if (category) {
       const cat = guild.channels.cache.get(category);
-      if (!cat) { await interaction.editReply(`❌ Catégorie introuvable : \`${category}\`.`); return; }
+      if (!cat) { await interaction.reply({ flags: MessageFlags.Ephemeral, content: `❌ Catégorie introuvable : \`${category}\`.` }); return; }
       g.tickets.categoryId = category;
     } else { delete g.tickets.categoryId; }
     if (logs) {
       const logCh = guild.channels.cache.get(logs);
-      if (!logCh) { await interaction.editReply(`❌ Salon logs introuvable : \`${logs}\`.`); return; }
+      if (!logCh) { await interaction.reply({ flags: MessageFlags.Ephemeral, content: `❌ Salon logs introuvable : \`${logs}\`.` }); return; }
       g.tickets.logChannelId = logs;
     } else { delete g.tickets.logChannelId; }
 
     await db.save(guild.id);
-    await sendSetupMessage(interaction, g);
+    await sendSetupMessage(interaction, g, 'reply');
     return;
   }
 
@@ -409,7 +408,7 @@ async function handleSetupModal(interaction, client) {
 
     g.tickets.buttons.push({ id: btnId, label, emoji, style, questions });
     await db.save(guild.id);
-    await sendSetupMessage(interaction, g);
+    await sendSetupMessage(interaction, g, 'reply');
     return;
   }
 
@@ -419,11 +418,11 @@ async function handleSetupModal(interaction, client) {
     const before = g.tickets.buttons.length;
     g.tickets.buttons = g.tickets.buttons.filter((b) => b.label.toLowerCase() !== nom);
     if (g.tickets.buttons.length === before) {
-      await interaction.editReply(`❌ Bouton \`${nom}\` introuvable.`);
+      await interaction.reply({ flags: MessageFlags.Ephemeral, content: `❌ Bouton \`${nom}\` introuvable.` });
       return;
     }
     await db.save(guild.id);
-    await sendSetupMessage(interaction, g);
+    await sendSetupMessage(interaction, g, 'reply');
     return;
   }
 }
