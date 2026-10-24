@@ -568,9 +568,9 @@ async function handleCloseButton(interaction, client) {
     } catch {}
   }
 
-  delete g.tickets.open[channelId];
-  await db.save(guild.id);
-
+  // Supprimer le salon AVANT de retirer de g.tickets.open.
+  // Si on retire d'abord, le check alreadyOpen dans handleOpenButton passe pendant
+  // les 5 secondes d'attente → un nouveau salon vide est créé.
   try {
     const ch = guild.channels.cache.get(channelId);
     if (ch) {
@@ -579,6 +579,9 @@ async function handleCloseButton(interaction, client) {
       await ch.delete('Ticket fermé');
     }
   } catch {}
+
+  delete g.tickets.open[channelId];
+  await db.save(guild.id);
 
   try { await interaction.editReply('✅ Ticket fermé.'); } catch {}
 }
