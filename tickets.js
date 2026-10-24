@@ -62,10 +62,7 @@ function buildPreviewEmbed(g) {
   }
 
   const cfg = [];
-  if (g.tickets.staffRoleId) cfg.push(`👮 Staff : <@&${g.tickets.staffRoleId}>`);
-  if (g.tickets.categoryId) cfg.push(`📁 Catégorie : <#${g.tickets.categoryId}>`);
   if (g.tickets.logChannelId) cfg.push(`📋 Logs : <#${g.tickets.logChannelId}>`);
-  if (g.tickets.embedChannelId) cfg.push(`📢 Salon : <#${g.tickets.embedChannelId}>`);
   if (cfg.length) embed.addFields({ name: 'Configuration', value: cfg.join('\n') });
 
   return embed;
@@ -113,7 +110,7 @@ function buildSetupMenu(g) {
   const row1 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('tsetup_edit_embed').setLabel('✏️ Modifier titre / description').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('tsetup_edit_color').setLabel('🎨 Couleur').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('tsetup_edit_config').setLabel('⚙️ Staff / Salon / Logs').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('tsetup_edit_config').setLabel('⚙️ Salon des logs').setStyle(ButtonStyle.Secondary),
   );
 
   // Ligne 2 — boutons
@@ -125,8 +122,8 @@ function buildSetupMenu(g) {
       .setDisabled(!g.tickets.buttons.length),
   );
 
-  // Ligne 3 — poster
-  const canPost = !!g.tickets.embedChannelId && !!g.tickets.staffRoleId && g.tickets.buttons.length > 0;
+  // Ligne 3 — poster (disponible dès qu'il y a au moins 1 bouton)
+  const canPost = g.tickets.buttons.length > 0;
   const row3 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('tsetup_post').setLabel('📢 Poster l\'embed').setStyle(ButtonStyle.Primary)
       .setDisabled(!canPost),
@@ -215,22 +212,10 @@ async function handleSetupButton(interaction, client) {
     return;
   }
 
-  // ---- Configurer staff / salon / logs / catégorie ----
+  // ---- Configurer logs uniquement ----
   if (id === 'tsetup_edit_config') {
     const modal = new ModalBuilder().setCustomId('tsetup_modal_config').setTitle('Configuration');
     modal.addComponents(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId('staff').setLabel('ID du rôle Staff').setStyle(TextInputStyle.Short)
-          .setValue(g.tickets.staffRoleId || '').setRequired(true).setPlaceholder('Clic droit sur le rôle → Copier l\'ID')
-      ),
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId('channel').setLabel('ID du salon où poster l\'embed').setStyle(TextInputStyle.Short)
-          .setValue(g.tickets.embedChannelId || '').setRequired(true).setPlaceholder('Clic droit sur le salon → Copier l\'ID')
-      ),
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId('category').setLabel('ID catégorie pour les tickets (optionnel)').setStyle(TextInputStyle.Short)
-          .setValue(g.tickets.categoryId || '').setRequired(false).setPlaceholder('Laisse vide si pas de catégorie')
-      ),
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId('logs').setLabel('ID salon logs (optionnel)').setStyle(TextInputStyle.Short)
           .setValue(g.tickets.logChannelId || '').setRequired(false).setPlaceholder('Laisse vide si pas de logs')
@@ -243,7 +228,8 @@ async function handleSetupButton(interaction, client) {
   // ---- Ajouter un bouton ----
   if (id === 'tsetup_add_btn') {
     if (g.tickets.buttons.length >= 25) {
-      await interaction.reply({ flags: MessageFlags.Ephemeral, content: '❌ Maximum 25 boutons atteint.' });
+      await interaction.deferUpdate();
+      await interaction.followUp({ flags: MessageFlags.Ephemeral, content: '❌ Maximum 25 boutons atteint.' });
       return;
     }
     const modal = new ModalBuilder().setCustomId('tsetup_modal_addbtn').setTitle('Ajouter un bouton');
@@ -298,22 +284,23 @@ async function handleSetupButton(interaction, client) {
   // ---- Poster l'embed ----
   if (id === 'tsetup_post') {
     await interaction.deferUpdate();
-    const targetChannel = guild.channels.cache.get(g.tickets.embedChannelId);
-    if (!targetChannel) {
-      await interaction.followUp({ flags: MessageFlags.Ephemeral, content: '❌ Salon introuvable. Reconfigure via ⚙️ Staff / Salon / Logs.' });
-      return;
-    }
+    // Poster dans le salon où la commande a été utilisée
+    const targetChannel = interaction.channel;
     const rows = buildPanelRows(g);
     if (!rows.length) {
       await interaction.followUp({ flags: MessageFlags.Ephemeral, content: '❌ Aucun bouton configuré.' });
       return;
     }
     try {
-      // Supprime l'ancien embed si existant
-      if (g.tickets.embedMessageId) {
-        try { await targetChannel.messages.fetch(g.tickets.embedMessageId).then((m) => m.delete()); } catch {}
+      // Supprime l'ancien embed si existant (dans n'importe quel salon)
+      if (g.tickets.embedChannelId && g.tickets.embedMessageId) {
+        try {
+          const oldCh = guild.channels.cache.get(g.tickets.embedChannelId);
+          if (oldCh) await oldCh.messages.fetch(g.tickets.embedMessageId).then((m) => m.delete());
+        } catch {}
       }
       const msg = await targetChannel.send({ embeds: [buildPanelEmbed(g)], components: rows });
+      g.tickets.embedChannelId = targetChannel.id;
       g.tickets.embedMessageId = msg.id;
       await db.save(guild.id);
       await interaction.followUp({ flags: MessageFlags.Ephemeral, content: `✅ Embed posté dans <#${targetChannel.id}> !` });
@@ -364,31 +351,14 @@ async function handleSetupModal(interaction, client) {
     return;
   }
 
-  // ---- Config staff/salon/logs ----
+  // ---- Config logs ----
   if (id === 'tsetup_modal_config') {
-    const staff = interaction.fields.getTextInputValue('staff').trim();
-    const channel = interaction.fields.getTextInputValue('channel').trim();
-    const category = interaction.fields.getTextInputValue('category').trim();
     const logs = interaction.fields.getTextInputValue('logs').trim();
-
-    const staffRole = guild.roles.cache.get(staff);
-    if (!staffRole) { await interaction.reply({ flags: MessageFlags.Ephemeral, content: `❌ Rôle introuvable : \`${staff}\`. Copie l'ID via clic droit sur le rôle.` }); return; }
-    const embedCh = guild.channels.cache.get(channel);
-    if (!embedCh) { await interaction.reply({ flags: MessageFlags.Ephemeral, content: `❌ Salon introuvable : \`${channel}\`. Copie l'ID via clic droit sur le salon.` }); return; }
-
-    g.tickets.staffRoleId = staff;
-    g.tickets.embedChannelId = channel;
-    if (category) {
-      const cat = guild.channels.cache.get(category);
-      if (!cat) { await interaction.reply({ flags: MessageFlags.Ephemeral, content: `❌ Catégorie introuvable : \`${category}\`.` }); return; }
-      g.tickets.categoryId = category;
-    } else { delete g.tickets.categoryId; }
     if (logs) {
       const logCh = guild.channels.cache.get(logs);
       if (!logCh) { await interaction.reply({ flags: MessageFlags.Ephemeral, content: `❌ Salon logs introuvable : \`${logs}\`.` }); return; }
       g.tickets.logChannelId = logs;
     } else { delete g.tickets.logChannelId; }
-
     await db.save(guild.id);
     await sendSetupMessage(interaction, g, 'reply');
     return;
