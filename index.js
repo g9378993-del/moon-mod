@@ -744,16 +744,28 @@ async function routeSelect(interaction) {
     return;
   }
 
-  // Confirmation de suppression de salon (construction commands)
+  // Select menu suppression salons — customId: delete_select_channels_N
+  if (interaction.isStringSelectMenu() && interaction.customId.startsWith('delete_select_channels')) {
+    const g = db.get(interaction.guild.id);
+    await constructionCmds.handleSelectMenu(interaction, client, g, db);
+    return;
+  }
+
+  // Confirmation de suppression de salon
   if (interaction.customId.startsWith('delete_confirm_')) {
-    const channelId = interaction.customId.split('_')[2];
-    const channel = interaction.guild.channels.cache.get(channelId);
-    if (channel && channel.deletable) {
-      await channel.delete('Suppression confirmée par ' + interaction.user.tag).catch(() => {});
-      await interaction.update({ content: '✅ Salon supprimé.', embeds: [], components: [] });
-    } else {
-      await interaction.update({ content: '❌ Impossible de supprimer le salon.', embeds: [], components: [] });
+    const token = interaction.customId.slice('delete_confirm_'.length);
+    const ids = constructionCmds.popPending(token);
+    if (!ids || ids.length === 0) {
+      await interaction.update({ content: '❌ Sélection expirée.', embeds: [], components: [] });
+      return;
     }
+    await interaction.deferUpdate();
+    let deleted = 0;
+    for (const chId of ids) {
+      const ch = interaction.guild.channels.cache.get(chId);
+      if (ch && ch.deletable) { await ch.delete('Suppression par ' + interaction.user.tag).catch(() => {}); deleted++; }
+    }
+    await interaction.editReply({ content: `✅ ${deleted} salon(s) supprimé(s).`, components: [] });
     return;
   }
   if (interaction.customId.startsWith('delete_cancel_')) {
