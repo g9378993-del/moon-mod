@@ -316,7 +316,7 @@ app.get('/api/ai-stats', auth, (req, res) => {
 });
 
 // ── Démarrage ─────────────────────────────────────────────────────
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.SERVER_PORT || process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`[dashboard] Serveur démarré sur le port ${PORT} — dashboard sur /dashboard`));
 
 module.exports = { app, setClient, setDb, pushLog, recordAiExchange };
