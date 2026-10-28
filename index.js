@@ -1636,7 +1636,7 @@ const dashboard = require('./server');
 })();
 
 const http = require('http');
-http.createServer((req, res) => res.end('OK')).listen(process.env.SERVER_PORT || process.env.PORT || 3000);
+http.createServer((req, res) => res.end('OK')).listen(process.env.HTTP_PORT || process.env.SERVER_PORT || 3001);
 
 if (process.env.PUBLIC_URL) {
   const https = require('https');
