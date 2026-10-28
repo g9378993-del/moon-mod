@@ -316,7 +316,7 @@ app.get('/api/ai-stats', auth, (req, res) => {
 });
 
 // ── Démarrage ─────────────────────────────────────────────────────
-const PORT = process.env.DASHBOARD_PORT || 4000;
-app.listen(PORT, () => console.log(`[dashboard] Serveur démarré sur le port ${PORT} — dashboard sur /dashboard`));
+// PORT désactivé — conflict avec BotHost
+// app.listen désactivé — conflict avec BotHost
 
 module.exports = { app, setClient, setDb, pushLog, recordAiExchange };
